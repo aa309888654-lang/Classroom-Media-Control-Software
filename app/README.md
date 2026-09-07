@@ -1,0 +1,106 @@
+# 小天AIGC · 课堂中控
+
+课堂演示中控桌面软件（Windows / macOS）：场景音乐一键播放、全局快捷键切歌、PPT 一键放映到投影屏、视频投第二显示器、无线同屏（手机扫码镜像 / 上传上屏）、课堂计时器。技术方案见 [`../方案.md`](../方案.md)。
+
+## 快速开始（开发运行）
+
+```bash
+cd app
+npm install     # 首次安装依赖（已装过可跳过）
+npm start       # 启动应用
+```
+
+## 打包 EXE（Windows：安装版 + 便携版）
+
+```bash
+npm run dist            # 两个都打
+npm run dist:portable   # 仅免安装便携版
+npm run dist:nsis       # 仅安装版
+```
+
+输出在 `electron-builder.yml` 配置的输出目录：
+
+- `小天AIGC-Setup-0.1.0.exe` —— 安装版，装完桌面出现「小天AIGC」快捷方式
+- `小天AIGC-Portable-0.1.0.exe` —— 便携版，双击即用，可拷 U 盘
+
+> 首次打包会自动下载 NSIS 打包工具；未签名 EXE 首次运行若遇 SmartScreen 提示，点「更多信息 → 仍要运行」。
+
+## 打包 Mac（.zip / .dmg，需 macOS 环境）
+
+```bash
+npm run dist:mac        # 输出 Apple Silicon + Intel 两个 zip
+```
+
+- Windows 上无法产出 Mac 安装包，需在 macOS 主机或 GitHub Actions（`.github/workflows/build-mac.yml`，手动触发）构建；
+- 未签名 app 首次打开被 Gatekeeper 拦截：右键 App →「打开」，或终端执行 `xattr -cr /Applications/小天AIGC.app`；
+- Mac 版差异：PPT 控制走 **AppleScript 驱动 PowerPoint for Mac**（WPS/Keynote 无自动化接口，不支持）；首次放映 macOS 会弹「自动化」权限申请，点允许；默认快捷键为 `Cmd+Alt+*`（Windows 为 `Ctrl+F*`，设置里可改）；「一键扩展模式」为 Windows 专属，Mac 外接显示器默认即扩展桌面；
+- 镜像投屏发送端：电脑与安卓手机可用；iPhone 不支持网页抓屏，请用发送页的「上传上屏」。
+
+## 功能与快捷键
+
+| 功能 | 操作 | Windows 快捷键 | macOS 快捷键 |
+|---|---|---|---|
+| 分类一键播放 | 点分类卡片 | `Ctrl+F11` / `Ctrl+F12` | `Cmd+Alt+1` / `Cmd+Alt+2` |
+| 播放 / 暂停 | ▶ 按钮 | `Ctrl+F6` | `Cmd+Alt+M` |
+| 上一首 / 下一首 | ⏮ ⏭ | `Ctrl+F3` / `Ctrl+F7` | `Cmd+Alt+←` / `Cmd+Alt+→` |
+| 音量 ± | 滑条 | `Ctrl+F9` / `Ctrl+F10` | `Cmd+Alt+↓` / `Cmd+Alt+↑` |
+| 静音 | — | `Ctrl+F8` | `Cmd+Alt+0` |
+| 一键放映 PPT | 大按钮 | `Ctrl+F1` | `Cmd+Alt+P` |
+| 退出投屏 | 红色按钮 | `Ctrl+F2` | `Cmd+Alt+E` |
+| 计时器启停 / 重置 | 课堂工具区 | `Alt+F7` / `Alt+F8` | `Cmd+Alt+T` / `Cmd+Alt+R` |
+
+- 切歌采用 **Web Audio 双通道交叉淡入淡出**（默认 2 秒，设置里可调 1~4 秒），播放/暂停带 0.5 秒淡入淡出；
+- 点「放映 PPT / 播视频」时音乐自动淡出；退出投屏后自动从暂停处恢复（设置里可关）；
+- 快捷键是系统级的：面板最小化、焦点在 PPT 上也能用；被其他软件占用时设置页会标红，可点击改键；
+- 关闭窗口 = 缩到托盘，音乐不中断；托盘菜单可退出程序。
+
+## 曲库
+
+- 内置曲目在 `app/resources/music/暖场|轻松/`，版权与署名见 [`resources/music/licenses.md`](resources/music/licenses.md)（CC BY 4.0，已合规署名）；
+- 自有曲目：放进「设置 → 音乐文件夹」对应分类的子文件夹（每个子文件夹 = 一个分类），自动识别 MP3/WAV/M4A/OGG/FLAC；
+- 视频：MP4（H.264+AAC）最稳；MKV/HEVC 受系统解码器限制，建议转码。
+
+## 投屏说明
+
+- PPT 放映由 PowerPoint/WPS 本体执行（Windows 走 COM 自动化，macOS 走 AppleScript），教室机需装其一；都装了优先 PowerPoint，只有 WPS 自动走 WPS（macOS 仅支持 PowerPoint）；
+- Windows 请设为「扩展这些显示器」：面板提供「一键扩展模式」按钮；macOS 外接显示器默认即扩展；
+- PPT 放映窗口跟随系统多屏规则落在副屏（投影屏）；视频窗口由程序直接定位到投影屏全屏；
+- PPT 有保护视图/宏提示导致打不开时，先在 PowerPoint 里点「启用编辑」再放映。
+
+## 无线同屏
+
+同一 WiFi 下，手机/电脑浏览器扫码打开面板给出的网址（零安装）：
+
+- **镜像投屏**（安卓手机 / 电脑 Chrome、Edge）：浏览器只在 HTTPS 加密页开放抓屏 API，软件内置自签证书双端口服务——扫码进 `http://IP:18333` 落地页，点「进入加密镜像页」跳转 `https://IP:18334`，**首次提示「证书风险」时点「高级 → 继续前往」**，再点「开始共享屏幕」即可；
+- **上传上屏**（所有手机，含 iPhone）：发送页选照片/视频直接上传，大屏立即显示——不走抓屏 API，无证书门槛，适合上交作业、展示作品；
+- **iPhone 镜像**：苹果不支持网页抓屏（系统限制），如需 iPhone 实时镜像需实现 AirPlay 接收器，暂在规划中；
+- 手机打不开网址：允许 Windows 防火墙放行本软件；仍不通则路由器开了「AP 隔离」，需在路由器后台关闭；
+- 退出：同屏画面右上角常显 ✕，或按 `Esc`（投屏期间为全局接管，焦点在任何窗口都有效）。
+
+## 常见问题
+
+- **双击 EXE 提示 SmartScreen**：未签名应用的正常提示，「更多信息 → 仍要运行」；
+- **杀毒软件拦截 PowerShell**：本软件仅在放映 PPT 时调用系统 PowerShell（COM 自动化），如被拦截请加入信任；
+- **投影屏没画面**：先点「一键扩展模式」（Windows），再用「屏幕助手」确认屏 0/屏 1 身份；
+- **切歌没声音**：检查系统音量与面板音量；热键冲突时到设置里改键；
+- **手机扫码后提示「证书风险」**：点「高级 → 继续前往」即可，这是局域网自建加密的正常提示；
+- **手机根本打不开同屏网址**：Windows 防火墙首次弹窗时点了「取消」，到防火墙设置放行本软件；或路由器开了 AP 隔离；
+- **苹果手机没有「开始共享屏幕」按钮**：iPhone 不支持网页抓屏，请用「上传上屏」。
+
+## 目录结构
+
+```
+app/
+├─ src/main/          # 主进程（窗口/托盘/配置/状态机/PPT控制/曲库/显示器/快捷键/同屏服务）
+├─ src/preload/       # IPC 安全桥（bridge.js 主面板、castBridge.js 同屏窗窄桥）
+├─ src/renderer/      # 界面（index.html 主面板、caster.html 同屏接收页、player.html 投影视频页等）
+├─ resources/         # icon、ppt-control.ps1（Win COM）、ppt-control.applescript（Mac）、music/（曲库+licenses.md）
+├─ scripts/           # gen-assets.js（生成图标）
+├─ build/icon.ico
+└─ electron-builder.yml
+```
+
+## 规划中（未实现）
+
+- **AirPlay 接收器**：iPhone 实时镜像（需实现 AirPlay 协议，工程量大）；
+- 课表联动、上下课铃、手机遥控（详见 `../方案.md` 第 11 节）。

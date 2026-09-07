@@ -1,0 +1,37 @@
+appId: com.xiaotian.aigc
+productName: 小天AIGC
+directories:
+  output: ../软件封装
+  buildResources: build
+files:
+  - src/**/*
+  - package.json
+extraResources:
+  - from: resources
+    to: resources
+win:
+  icon: resources/icon.png
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: 小天AIGC
+  artifactName: 小天AIGC-Setup-${version}.exe
+portable:
+  artifactName: 小天AIGC-Portable-${version}.exe
+# 说明：macOS 安装包（dmg/zip）需在 macOS 主机或云端 macOS runner 构建（见 .github/workflows/build-mac.yml）
+mac:
+  icon: resources/icon.png
+  target:
+    - target: zip
+      arch: [arm64, x64]
+  category: public.app-category.education
+  extendInfo:
+    # PPT 放映控制走 AppleScript（osascript 驱动 PowerPoint for Mac），
+    # 没有这条声明 macOS 会直接拒绝 AppleEvents 而不弹授权框
+    NSAppleEventsUsageDescription: 小天AIGC 需要通过“自动化”权限控制 PowerPoint 放映（开始/翻页/退出）。

@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:;" />
+  <title>欢迎屏</title>
+  <link rel="stylesheet" href="assets/welcome.css" />
+</head>
+<body class="w-fs">
+  <div class="w-bg" id="bg"></div>
+  <div class="w-dim"></div>
+  <div class="w-main">
+    <div class="w-title" id="title"></div>
+    <div class="w-sub" id="sub"></div>
+  </div>
+  <img id="logo" class="w-logo" alt="LOGO" hidden>
+  <button id="wClose" class="w-close" title="退出全屏（Esc）" type="button">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6 L18 18 M18 6 L6 18"/></svg>
+  </button>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const text = q.get('text') || '欢迎各位领导莅临指导';
+    const bgIdx = String(q.get('bg') || '1').replace(/\D/g, '').padStart(2, '0');
+    const styleIdx = String(q.get('style') || '1').replace(/\D/g, '');
+    const sub = q.get('sub') || '';
+    const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const fileUrl = (p) => encodeURI('file:///' + String(p).replace(/\\/g, '/'));
+
+    const bgpath = q.get('bgpath') || `../../../../resources/welcome-bg/${bgIdx}.png`;
+    document.getElementById('bg').style.backgroundImage = `url("${fileUrl(bgpath)}")`;
+    document.getElementById('title').innerHTML = escHtml(text).replace(/\n/g, '<br>');
+    document.getElementById('sub').textContent = sub;
+    document.body.className = 'w-fs ts' + styleIdx;
+
+    // 字体白名单（与面板 WL_FONTS 顺序一致），非法值回落默认雅黑
+    const WL_FONTS_CSS = [
+      '"Microsoft YaHei","PingFang SC",sans-serif',
+      'SimHei,"Microsoft YaHei",sans-serif',
+      'KaiTi,STKaiti,"Microsoft YaHei",serif',
+      'LiSu,STLiti,KaiTi,serif',
+      'STXingkai,KaiTi,serif',
+      'STXinwei,KaiTi,serif',
+      'SimSun,STSong,serif',
+      'FangSong,STFangsong,serif',
+      'STZhongsong,SimSun,serif',
+      'YouYuan,"Microsoft YaHei",sans-serif',
+    ];
+    const fontIdx = parseInt(q.get('font') || '1', 10);
+    const fontCss = WL_FONTS_CSS[Math.max(1, Math.min(WL_FONTS_CSS.length, isNaN(fontIdx) ? 1 : fontIdx)) - 1];
+    document.body.style.setProperty('--wl-font', fontCss);
+
+    // LOGO：默认左上角，位置可由面板配置（tl/tr/tc/bl/br）
+    const logo = (q.get('logo') || '').trim();
+    const lpos = (q.get('lpos') || 'tl');
+    if (logo) {
+      const allowed = ['tl', 'tr', 'tc', 'bl', 'br'];
+      const pos = allowed.indexOf(lpos) >= 0 ? lpos : 'tl';
+      const el = document.getElementById('logo');
+      el.src = fileUrl(logo);
+      el.classList.add('w-logo-' + pos);
+      el.hidden = false;
+    }
+
+    // 左上角关闭钮：默认隐藏；仅当鼠标进入左上角热区（距左边 260px 且距顶 200px）才显示；
+    // 移出热区或闲置不动即自动隐藏；点击退出全屏
+    const closeBtn = document.getElementById('wClose');
+    let hideTimer = null;
+    const HOT_X = 260, HOT_Y = 200, IDLE_HIDE_MS = 2600;
+    // 开屏提示期：新窗口出现瞬间 OS 会按当前光标位置补发一次 mousemove，
+    // 光标不在热区会立刻把提示藏起来——提示期内移出热区不隐藏
+    const hintUntil = Date.now() + IDLE_HIDE_MS;
+    function showClose() {
+      document.body.classList.add('w-ui');
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(hideClose, IDLE_HIDE_MS); // 停在热区不动，闲置后隐藏
+    }
+    function hideClose() { clearTimeout(hideTimer); document.body.classList.remove('w-ui'); }
+    function onMove(e) {
+      const inHot = e.clientX <= HOT_X && e.clientY <= HOT_Y;
+      if (inHot) showClose();
+      else if (Date.now() > hintUntil && !closeBtn.matches(':hover')) hideClose(); // 提示期外移出热区（且未悬停按钮）即隐藏
+    }
+    window.addEventListener('mousemove', onMove, true);
+    closeBtn.addEventListener('mouseenter', showClose);
+    closeBtn.addEventListener('mouseleave', () => { hideTimer = setTimeout(hideClose, 1200); });
+    closeBtn.addEventListener('click', () => window.api.invoke('welcome:winClose'));
+    // 开屏先显 2.6 秒提示，随后由 showClose 内的闲置计时自动隐藏
+    showClose();
+
+    // 多行文字自动收敛字号，保证远观可读
+    const lines = text.split('\n').length;
+    if (lines >= 2) {
+      const t = document.getElementById('title');
+      t.style.fontSize = Math.max(3.4, 7 - Math.min(lines, 5) * 0.85) + 'vw';
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') window.api.invoke('welcome:winClose');
+    });
+  </script>
+</body>
+</html>

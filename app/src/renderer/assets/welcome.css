@@ -1,0 +1,72 @@
+/* 欢迎屏共享样式：大屏页与面板弹窗即预览共用
+ * 10 种文字样式（ts1-ts10 只管配色/光效），字体由 --wl-font 统一控制（面板可选）
+ * 注意：.w-fs 的全屏定位只允许作用在大屏页 body 上；
+ * 面板弹窗预览用 .wl-preview（styles.css），绝不能加 w-fs，
+ * 否则 fixed inset:0 会整块盖住左侧输入区，导致文字无法编辑。 */
+
+html, body.w-fs { margin: 0; padding: 0; width: 100%; height: 100%; }
+body.w-fs, body.w-fs * { box-sizing: border-box; user-select: none; }
+body.w-fs { position: fixed; inset: 0; overflow: hidden; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; }
+.w-bg { position: absolute; inset: 0; background-size: cover; background-position: center; filter: brightness(0.92) saturate(1.05); }
+.w-dim { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 38%, rgba(0,0,0,0.18) 0%, rgba(0,0,0,0.52) 100%); }
+.w-main { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 6vh 6vw; text-align: center; }
+.w-title { font-size: 6.4vw; font-weight: 800; letter-spacing: 0.1em; line-height: 1.25; word-break: break-word; font-family: var(--wl-font, "Microsoft YaHei", "PingFang SC", sans-serif); }
+.w-sub { margin-top: 2.2vh; font-size: 1.6vw; letter-spacing: 0.45em; opacity: 0.85; font-family: var(--wl-font, "Microsoft YaHei", "PingFang SC", sans-serif); }
+
+/* ts1 晓光·稳静蓝白光 */
+.ts1 .w-title { color: #f3f8ff; text-shadow: 0 2px 18px rgba(90,160,255,.6), 0 1px 0 rgba(30,60,120,.5); }
+.ts1 .w-sub { color: #cfe0f5; }
+/* ts2 鎏金·金色渐变 */
+.ts2 .w-title { background: linear-gradient(180deg, #ffe9a8 0%, #e6b241 55%, #a97b1d 100%); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: 0 2px 16px rgba(0,0,0,.45); }
+.ts2 .w-sub { color: #ffe9a8; }
+/* ts3 朗红·红旗白描 */
+.ts3 .w-title { color: #e8352a; -webkit-text-stroke: 2px rgba(255,255,255,.92); text-shadow: 0 4px 22px rgba(0,0,0,.35); }
+.ts3 .w-sub { color: #fff; text-shadow: 0 1px 8px rgba(0,0,0,.5); }
+/* ts4 楷风·暖金楷韵 */
+.ts4 .w-title { color: #fffdf5; text-shadow: 0 2px 14px rgba(0,0,0,.65), 0 0 30px rgba(255,220,150,.35); }
+.ts4 .w-sub { color: #f5e9cf; }
+/* ts5 隶韵·象牙文雅 */
+.ts5 .w-title { color: #f8f3e6; text-shadow: 0 3px 16px rgba(20,40,90,.55); }
+.ts5 .w-sub { color: #d8d0bf; }
+/* ts6 行楷·冰蓝飘逸 */
+.ts6 .w-title { color: #ffffff; letter-spacing: 0.06em; text-shadow: 0 1px 0 rgba(0,0,0,.5), 0 0 26px rgba(120,200,255,.75); }
+.ts6 .w-sub { color: #cfe8ff; }
+/* ts7 霓虹·赛博双影 */
+.ts7 .w-title { color: #ffffff; font-weight: 900; text-shadow: 0 0 16px #38f3ff, 0 0 34px #38f3ff, 0 0 60px #c026d3, 2px 2px 0 #c026d3; }
+.ts7 .w-sub { color: #7deeff; text-shadow: 0 0 14px #38f3ff; }
+/* ts8 简白·留白极简 */
+.ts8 .w-title { color: #f2f2f0; font-size: 5.4vw; font-weight: 400; letter-spacing: 0.42em; text-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.ts8 .w-sub { color: #cfcfcf; letter-spacing: 0.6em; }
+/* ts9 天际·蓝白渐变 */
+.ts9 .w-title { background: linear-gradient(180deg, #dff3ff 0%, #7cc4ff 70%, #3b8ad8 100%); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: 0 3px 18px rgba(0,0,0,.3); }
+.ts9 .w-sub { color: #cfe3ff; }
+/* ts10 墨影·深墨红章 */
+.ts10 .w-title { color: #16181c; font-weight: 900; letter-spacing: 0.12em; }
+.ts10 .w-sub { color: #b03a2b; font-weight: 700; }
+.ts10 .w-bg { filter: brightness(1.06) saturate(.92); }
+.ts10 .w-dim { background: radial-gradient(ellipse at 50% 40%, rgba(255,255,255,.10) 0%, rgba(255,255,255,.35) 100%); }
+
+/* LOGO：默认左上角；位置五选（tl/tr/tc/bl/br），与大屏页及面板预览共用 */
+.w-logo { position: absolute; max-width: 13vw; max-height: 14vh; object-fit: contain; z-index: 6; opacity: 0.96; filter: drop-shadow(0 2px 8px rgba(0,0,0,.35)); }
+.w-logo-tl { top: 3vh; left: 3vw; }
+.w-logo-tr { top: 3vh; right: 3vw; }
+.w-logo-tc { top: 3vh; left: 50%; transform: translateX(-50%); }
+.w-logo-bl { bottom: 3vh; left: 3vw; }
+.w-logo-br { bottom: 3vh; right: 3vw; }
+
+/* 左上角滑出式关闭钮：闲置自动隐藏，鼠标移动/悬停可见 */
+.w-close { position: fixed; top: 2.4vh; left: 2vw; width: 56px; height: 56px; border-radius: 50%;
+  background: rgba(10,16,28,.5); color: #fff; border: 1px solid rgba(255,255,255,.35);
+  display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 30;
+  opacity: 0; pointer-events: none; transition: opacity .3s ease, background .18s ease; backdrop-filter: blur(4px); }
+.w-close:hover { background: rgba(208,52,52,.78); }
+body.w-ui .w-close { opacity: 1; pointer-events: auto; }
+
+/* 面板弹窗预览里：LOGO/关闭钮按预览盒尺寸缩放（vw/vh 在小窗里会失真） */
+.wl-preview .w-logo { max-width: 60px; max-height: 46px; }
+.wl-preview .w-logo-tl { top: 8px; left: 8px; }
+.wl-preview .w-logo-tr { top: 8px; right: 8px; }
+.wl-preview .w-logo-tc { top: 8px; left: 50%; transform: translateX(-50%); }
+.wl-preview .w-logo-bl { bottom: 8px; left: 8px; }
+.wl-preview .w-logo-br { bottom: 8px; right: 8px; }
+.wl-preview .w-close { display: none; }

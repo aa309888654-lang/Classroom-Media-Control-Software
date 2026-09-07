@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>课堂计时器</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #161616; overflow: hidden; }
+    body {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -webkit-app-region: drag;  /* 无边框窗口：整窗可拖动 */
+      user-select: none;
+    }
+    #label { color: #9b9b9b; font-size: clamp(14px, 2vw, 28px); letter-spacing: 6px; margin-bottom: 1.5vh; }
+    #time {
+      font-family: "Cascadia Mono", "JetBrains Mono", Consolas, monospace; font-weight: 800;
+      font-size: clamp(56px, 15vw, 44vh); line-height: 1;  /* 窗口化后随窗口尺寸缩放 */
+      color: #eaeaea; font-variant-numeric: tabular-nums;
+    }
+    #time.warn { color: #da7b11; }
+    #time.danger { color: #e34850; }
+    #time.done { color: #e34850; animation: flash 0.6s steps(2) infinite; }
+    @keyframes flash { 50% { opacity: 0.15; } }
+    #sub { color: #6e6e6e; font-size: clamp(11px, 1.4vw, 18px); margin-top: 2vh; letter-spacing: 3px; }
+    /* 窗口控制钮：平时半透，悬停显现 */
+    .win-ctrl {
+      position: fixed; top: 10px; right: 12px; display: flex; gap: 6px;
+      -webkit-app-region: no-drag;
+      opacity: 0.35; transition: opacity 0.15s;
+    }
+    .win-ctrl:hover { opacity: 1; }
+    .win-ctrl button {
+      width: 32px; height: 27px; border-radius: 6px; cursor: pointer;
+      border: 1px solid #3a3a3a; background: #252525; color: #a3a3a3; font-size: 14px;
+    }
+    .win-ctrl button:hover { color: #eaeaea; border-color: #2680eb; }
+    /* 左上角滑出式关闭钮：默认隐藏；鼠标靠近左上角热区才显现，闲置自动隐藏 */
+    #tClose { position: fixed; top: 2.4vh; left: 2vw; width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(10,16,28,.5); color: #fff; border: 1px solid rgba(255,255,255,.35);
+      display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 30;
+      opacity: 0; pointer-events: none; transition: opacity .3s ease, background .18s ease;
+      backdrop-filter: blur(4px); -webkit-app-region: no-drag; }
+    #tClose:hover { background: rgba(208,52,52,.78); }
+    body.t-ui #tClose { opacity: 1; pointer-events: auto; }
+  </style>
+</head>
+<body>
+  <div class="win-ctrl">
+    <button id="btnFs" title="全屏 / 还原">⛶</button>
+    <button id="btnClose" title="关闭计时窗口">✕</button>
+  </div>
+  <button id="tClose" title="退出（Esc）" type="button">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6 L18 18 M18 6 L6 18"/></svg>
+  </button>
+  <div id="label">课堂计时</div>
+  <div id="time">00:00</div>
+  <div id="sub">小天AIGC</div>
+  <script>
+    const timeEl = document.getElementById('time');
+    const subEl = document.getElementById('sub');
+    function fmt(ms) {
+      const s = Math.max(0, Math.ceil(ms / 1000));
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+      const mm = String(m).padStart(2, '0'), ss = String(sec).padStart(2, '0');
+      return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+    function beep(times) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        for (let i = 0; i < times; i++) {
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.frequency.value = 880; o.type = 'sine';
+          o.connect(g); g.connect(ctx.destination);
+          const t = ctx.currentTime + i * 0.45;
+          g.gain.setValueAtTime(0.22, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+          o.start(t); o.stop(t + 0.34);
+        }
+      } catch { }
+    }
+    function render(s) {
+      if (s.finished) { timeEl.textContent = '00:00'; timeEl.className = 'done'; subEl.textContent = '时间到！'; return; }
+      const ms = s.mode === 'countdown' ? s.remaining : s.elapsed;
+      timeEl.textContent = fmt(ms);
+      timeEl.className = s.running ? '' : 'warn';
+      subEl.textContent = s.mode === 'countdown' ? '倒计时' : s.mode === 'countup' ? '正计时' : '秒表';
+    }
+    window.api.on('timer:tick', render);
+    window.api.on('timer:finished', () => { render({ mode: 'countdown', finished: true, remaining: 0, elapsed: 0 }); beep(3); });
+    document.getElementById('btnFs').onclick = () => window.api.invoke('timer:winFullscreen');
+    document.getElementById('btnClose').onclick = () => window.api.invoke('timer:toggleShow');
+
+    // ESC：全屏先退全屏，窗口化直接关窗（主进程统一判定）
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') window.api.invoke('timer:escExit');
+    });
+
+    // 左上角 ✕ 滑出钮：开屏先显 2.6 秒提示；之后鼠标靠近左上角热区才显现，闲置自动隐藏
+    const tClose = document.getElementById('tClose');
+    let tHideTimer = null;
+    const HOT_X = 260, HOT_Y = 200, IDLE_HIDE_MS = 2600;
+    const hintUntil = Date.now() + IDLE_HIDE_MS; // 提示期内移出热区不隐藏（OS 会按光标位置补发一次 mousemove）
+    function tShowClose() {
+      document.body.classList.add('t-ui');
+      clearTimeout(tHideTimer);
+      tHideTimer = setTimeout(tHideClose, IDLE_HIDE_MS);
+    }
+    function tHideClose() { clearTimeout(tHideTimer); document.body.classList.remove('t-ui'); }
+    window.addEventListener('mousemove', (e) => {
+      const inHot = e.clientX <= HOT_X && e.clientY <= HOT_Y;
+      if (inHot) tShowClose();
+      else if (Date.now() > hintUntil && !tClose.matches(':hover')) tHideClose();
+    }, true);
+    tClose.addEventListener('mouseenter', tShowClose);
+    tClose.addEventListener('mouseleave', () => { tHideTimer = setTimeout(tHideClose, 1200); });
+    tClose.addEventListener('click', () => window.api.invoke('timer:escExit'));
+    tShowClose();
+  </script>
+</body>
+</html>

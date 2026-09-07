@@ -1,0 +1,63 @@
+# Node.js
+node_modules/
+app/node_modules/
+软件说明/build/node_modules/
+
+# Electron build output
+dist/
+build/
+*.exe
+*.dmg
+*.zip
+软件封装-clean/
+软件封装/
+
+# Sensitive / secrets
+密钥/
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+.env
+.env.local
+.env.*.local
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Internal tool state
+.mimosa/
+软件说明/
+软件说明/build/
+软件说明/.mimosa/
+
+# Assets not needed in repo
+LED背景/
+77ff2f5f-faea-4542-998c-ac1101b4cf8d.png
+*.png
+!app/resources/icon.png
+!app/resources/icon-tray.png
+!app/build/icon.ico
+
+# Documentation (keep 方案.md if you want, or exclude)
+# 方案.md
+
+# Electron build temp / test artifacts
+app/.tmp-fetch/
+app/asar-tmp/
+app/test-artifacts/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

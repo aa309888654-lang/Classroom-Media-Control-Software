@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>视频投放</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: contain; display: block; }
+    /* 左上角滑出式关闭钮：默认隐藏；鼠标靠近左上角热区才显现，闲置自动隐藏 */
+    #vClose { position: fixed; top: 2.4vh; left: 2vw; width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(10,16,28,.5); color: #fff; border: 1px solid rgba(255,255,255,.35);
+      display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 30;
+      opacity: 0; pointer-events: none; transition: opacity .3s ease, background .18s ease; backdrop-filter: blur(4px); }
+    #vClose:hover { background: rgba(208,52,52,.78); }
+    body.v-ui #vClose { opacity: 1; pointer-events: auto; }
+  </style>
+</head>
+<body>
+  <video id="v"></video>
+  <button id="vClose" title="停止投放（Esc）" type="button">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6 L18 18 M18 6 L6 18"/></svg>
+  </button>
+  <script src="player.js"></script>
+</body>
+</html>

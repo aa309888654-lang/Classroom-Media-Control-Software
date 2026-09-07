@@ -1,0 +1,25 @@
+{
+  "name": "xiaotian-aigc",
+  "productName": "小天AIGC",
+  "version": "0.1.0",
+  "description": "小天AIGC · 课堂演示中控：音乐、PPT一键放映、视频投第二显示器",
+  "main": "src/main/index.js",
+  "author": "小天AIGC",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "gen-assets": "node scripts/gen-assets.js",
+    "dist": "electron-builder --win",
+    "dist:portable": "electron-builder --win portable",
+    "dist:nsis": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "node-forge": "^1.4.0"
+  }
+}

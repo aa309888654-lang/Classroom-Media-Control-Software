@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:* http://localhost:*; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; media-src 'self' blob: mediastream: http://127.0.0.1:* http://localhost:*;" />
+  <title>小天AIGC · 无线同屏</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    body { display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; object-fit: contain; display: block; }
+    #wait {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px;
+      color: #6e6e6e; font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      font-size: 15px; letter-spacing: 4px; transition: opacity .4s;
+    }
+    #wait.hide { opacity: 0; pointer-events: none; }
+    .pulse { width: 10px; height: 10px; border-radius: 50%; background: #2680eb; animation: p 1.2s ease-in-out infinite; }
+    @keyframes p { 50% { transform: scale(1.8); opacity: .4; } }
+    /* 右上角常显关闭钮：同屏窗口是全屏无框体验，退出入口必须一眼可见（不能依赖鼠标热区发现） */
+    #castClose { position: fixed; top: 2.4vh; right: 2vw; width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(10,16,28,.5); color: #fff; border: 1px solid rgba(255,255,255,.35);
+      display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 30;
+      opacity: .85; transition: opacity .3s ease, background .18s ease; backdrop-filter: blur(4px); }
+    #castClose:hover { opacity: 1; background: rgba(208,52,52,.78); }
+    /* 上传上屏层：手机传来的照片/视频，全屏显示在镜像画面之上 */
+    #upMedia { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      background: #000; z-index: 20; }
+    #upMedia img, #upMedia video { max-width: 100%; max-height: 100%; object-fit: contain; }
+    #upBadge { position: fixed; top: 2.4vh; left: 2vw; z-index: 25; display: none;
+      background: rgba(10,16,28,.6); color: #cfe6ff; border: 1px solid rgba(255,255,255,.25);
+      border-radius: 999px; padding: 8px 18px; font-size: 14px; letter-spacing: 1px;
+      font-family: "Segoe UI", "Microsoft YaHei", sans-serif; backdrop-filter: blur(4px); }
+  </style>
+</head>
+<body>
+  <div id="wait"><span class="pulse"></span><span>等待设备接入同屏…</span></div>
+  <video id="v" muted autoplay playsinline></video>
+  <div id="upMedia"><img id="upImg" alt="" /><video id="upVideo" autoplay playsinline controls></video></div>
+  <div id="upBadge">📤 上屏：<span id="upName"></span></div>
+  <button id="castClose" title="退出同屏（Esc）" type="button">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6 L18 18 M18 6 L6 18"/></svg>
+  </button>
+  <script src="assets/castReceiver.js"></script>
+  <script>
+    const port = new URLSearchParams(location.search).get('port') || '18333';
+    const waitEl = document.getElementById('wait');
+    // 上传上屏层：收到 upload 消息后按类型展示（图片直出，视频起播）
+    const upMedia = document.getElementById('upMedia');
+    const upImg = document.getElementById('upImg');
+    const upVideo = document.getElementById('upVideo');
+    const upBadge = document.getElementById('upBadge');
+    const upName = document.getElementById('upName');
+    function showUpload(m) {
+      const src = 'http://127.0.0.1:' + port + '/media/' + encodeURIComponent(m.id);
+      upName.textContent = m.name || '未命名';
+      if ((m.mime || '').startsWith('video/')) {
+        upImg.style.display = 'none';
+        upVideo.style.display = 'block';
+        upVideo.src = src;
+      } else {
+        upVideo.style.display = 'none';
+        upVideo.pause(); upVideo.removeAttribute('src');
+        upImg.style.display = 'block';
+        upImg.src = src;
+      }
+      upMedia.style.display = 'flex';
+      upBadge.style.display = 'block';
+      waitEl.classList.add('hide');
+    }
+    window.CastReceiver.start({
+      port: Number(port),
+      video: document.getElementById('v'),
+      onUpload: showUpload,
+      onState: (s) => {
+        if (s === 'playing') waitEl.classList.add('hide');
+        if (s === 'disconnected' || s === 'bye') {
+          waitEl.classList.remove('hide');
+          // 会话结束：一并撤掉上屏内容
+          upMedia.style.display = 'none';
+          upBadge.style.display = 'none';
+          upImg.removeAttribute('src');
+          upVideo.pause(); upVideo.removeAttribute('src');
+        }
+      },
+    });
+
+    // 退出交互：①右上角常显 ✕ ②Esc 关屏（主进程 before-input-event 兜底，页面脚本异常也能退）
+    const closeBtn = document.getElementById('castClose');
+    closeBtn.addEventListener('click', () => window.castApi && window.castApi.close());
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && window.castApi) window.castApi.close();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小天 AIGC 课堂中控 · 一体化课堂演示中控（MIT 开源，免费下载）</title>
+<meta name="description" content="小天 AIGC 课堂中控：面向一线教师的 Windows 桌面课堂演示中控，集暖场音乐、PPT 一键放映、视频投放、无线同屏、课堂计时器于一体，教师屏操作、投影屏呈现。MIT 协议开源，安装版与便携版免费下载。">
+<meta name="keywords" content="小天AIGC课堂中控,课堂中控,课堂演示,PPT放映,无线同屏,教师工具,开源软件,MIT,课堂音乐,投屏软件">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="小天 AIGC">
+<meta property="og:title" content="小天 AIGC 课堂中控 · 一体化课堂演示中控（MIT 开源）">
+<meta property="og:description" content="暖场音乐、PPT 一键放映、视频投放、无线同屏，集中到一个大按钮面板——教师屏操作、投影屏呈现。MIT 开源，免费下载。">
+<meta property="og:image" content="screenshots/01-主面板.png">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://www.aicgxt.com/game/xiaotian-intro/index.html">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "小天 AIGC 课堂中控",
+  "alternateName": "XiaoTian AIGC Classroom Console",
+  "applicationCategory": "MultimediaApplication",
+  "operatingSystem": "Windows 10, Windows 11",
+  "softwareVersion": "0.1.0",
+  "description": "面向一线教师的 Windows 桌面课堂演示中控：暖场音乐、PPT 一键放映、视频投放、无线同屏、课堂计时器集中于一个大按钮面板。",
+  "url": "https://aicgxt.com",
+  "isAccessibleForFree": true,
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
+  "featureList": ["分类音乐曲库", "PPT 一键放映", "视频一键投放", "无线同屏", "课堂计时器", "全局快捷键"]
+}
+</script>
+<style>
+  :root {
+    --ink: #0f172a;
+    --sub: #475569;
+    --faint: #94a3b8;
+    --brand: #4f46e5;
+    --brand2: #2563eb;
+    --bg: #eef3f9;
+    --card: #ffffff;
+    --line: #e2e8f0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ===== 顶部导航 ===== */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(12px);
+    background: rgba(238, 243, 249, .85);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 17px; color: #1e293b; text-decoration: none; }
+  .logo .dot {
+    width: 36px; height: 36px; border-radius: 12px;
+    background: #eff6ff; border: 1px solid #dbeafe;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; line-height: 1;
+  }
+  nav .links { display: flex; gap: 22px; font-size: 14px; }
+  nav .links a { color: var(--sub); text-decoration: none; transition: color .2s; }
+  nav .links a:hover { color: var(--brand); }
+  @media (max-width: 720px) { nav .links { display: none; } }
+
+  /* ===== 主视觉 ===== */
+  .hero { padding: 72px 0 64px; text-align: center; }
+  .kicker {
+    display: inline-block; padding: 5px 14px; border-radius: 999px;
+    background: #e0e7ff; color: var(--brand);
+    font-size: 12px; font-weight: 700; letter-spacing: .18em;
+  }
+  .hero h1 { font-size: clamp(34px, 5.5vw, 56px); font-weight: 900; margin-top: 18px; letter-spacing: .01em; }
+  .hero h1 span {
+    background: linear-gradient(90deg, var(--brand), var(--brand2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero .slogan { margin-top: 14px; font-size: clamp(15px, 2vw, 19px); color: var(--sub); }
+  .hero .desc {
+    max-width: 720px; margin: 20px auto 0; color: var(--sub); font-size: 15px;
+  }
+  .cta { margin-top: 30px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 26px; border-radius: 14px; font-size: 15px; font-weight: 700;
+    text-decoration: none; transition: transform .15s, box-shadow .15s;
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--brand), var(--brand2));
+    color: #fff; box-shadow: 0 8px 24px rgba(79, 70, 229, .35);
+  }
+  .btn-ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  .meta-badges { margin-top: 26px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .meta-badges span {
+    padding: 6px 14px; border-radius: 999px; background: #fff;
+    border: 1px solid var(--line); font-size: 12.5px; color: var(--sub);
+  }
+
+  /* ===== 双屏示意条 ===== */
+  .duo {
+    margin-top: 44px;
+    border-radius: 24px; padding: 26px 28px;
+    background: linear-gradient(135deg, #1e1b4b, #1d4ed8);
+    color: #c7d2fe; display: flex; gap: 26px; flex-wrap: wrap; align-items: center;
+    box-shadow: 0 20px 50px rgba(30, 27, 75, .25);
+  }
+  .duo .cell { flex: 1; min-width: 240px; display: flex; gap: 14px; align-items: flex-start; }
+  .duo .cell .ico { font-size: 26px; }
+  .duo .cell b { color: #fff; display: block; font-size: 15px; margin-bottom: 2px; }
+  .duo .cell p { font-size: 13px; line-height: 1.6; }
+
+  /* ===== 通用 section ===== */
+  section { padding: 64px 0 8px; }
+  .sec-head { margin-bottom: 28px; }
+  .sec-head .tag { color: var(--brand); font-size: 12.5px; font-weight: 800; letter-spacing: .2em; }
+  .sec-head h2 { font-size: clamp(24px, 3.4vw, 32px); font-weight: 900; margin-top: 6px; }
+  .sec-head p { color: var(--sub); margin-top: 8px; font-size: 14.5px; max-width: 640px; }
+
+  /* ===== 功能卡片 ===== */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    padding: 26px; transition: transform .18s, box-shadow .18s;
+  }
+  .card:hover { transform: translateY(-4px); box-shadow: 0 14px 34px rgba(15, 23, 42, .08); }
+  .card .ico {
+    width: 46px; height: 46px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+    margin-bottom: 14px;
+  }
+  .card h3 { font-size: 17px; font-weight: 800; }
+  .card p { margin-top: 6px; font-size: 13.5px; color: var(--sub); }
+
+  /* ===== 截图画廊 ===== */
+  .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+  .shot {
+    background: #fff; border: 1px solid var(--line); border-radius: 20px;
+    overflow: hidden; transition: transform .18s, box-shadow .18s;
+  }
+  .shot:hover { transform: translateY(-4px); box-shadow: 0 14px 34px rgba(15, 23, 42, .1); }
+  .shot img { width: 100%; height: 240px; object-fit: cover; object-position: top; display: block; }
+  .shot figcaption { padding: 12px 16px; font-size: 13px; color: var(--sub); }
+
+  /* ===== 表格/清单 ===== */
+  .panel {
+    background: #fff; border: 1px solid var(--line); border-radius: 20px; overflow: hidden;
+  }
+  .panel ul { list-style: none; }
+  .panel li { display: flex; gap: 16px; padding: 15px 22px; font-size: 14px; }
+  .panel li + li { border-top: 1px solid #f1f5f9; }
+  .panel li b { width: 110px; flex-shrink: 0; color: var(--ink); }
+  .panel li span { color: var(--sub); }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 800px) { .two-col { grid-template-columns: 1fr; } }
+  kbd {
+    display: inline-block; padding: 3px 10px; border-radius: 8px;
+    background: #f1f5f9; border: 1px solid #e2e8f0; border-bottom-width: 2px;
+    font-family: Consolas, monospace; font-size: 12.5px; color: var(--ink);
+    white-space: nowrap;
+  }
+  .keys li { align-items: center; }
+  .keys li b { width: auto; min-width: 150px; font-weight: 500; }
+
+  /* ===== 开源许可横幅 ===== */
+  .license {
+    margin-top: 64px; border-radius: 24px; padding: 34px 32px;
+    background: linear-gradient(135deg, #ecfdf5, #eff6ff);
+    border: 1px solid #bbf7d0;
+    display: flex; gap: 24px; flex-wrap: wrap; align-items: center;
+  }
+  .license .big { font-size: 34px; }
+  .license h3 { font-size: 19px; font-weight: 800; }
+  .license p { color: var(--sub); font-size: 13.5px; margin-top: 6px; max-width: 720px; }
+  .license .chips { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .license .chips span {
+    padding: 4px 12px; border-radius: 999px; background: #fff;
+    border: 1px solid #bbf7d0; font-size: 12px; font-weight: 700; color: #059669;
+  }
+
+  footer {
+    margin-top: 72px; padding: 34px 0 44px; border-top: 1px solid var(--line);
+    text-align: center; color: var(--faint); font-size: 13px;
+  }
+  footer a { color: var(--brand); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="logo" href="/game/" title="返回牛牛工具箱首页"><span class="dot" role="img" aria-label="牛牛">🐮</span>牛牛工具箱</a>
+    <div class="links">
+      <a href="#features">核心功能</a>
+      <a href="#shots">界面一览</a>
+      <a href="#env">运行环境</a>
+      <a href="#license">开源许可</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="kicker">OPEN SOURCE · MIT · V0.1.0</span>
+    <h1>小天 <span>AIGC</span> 课堂中控</h1>
+    <p class="slogan">音乐 · PPT 放映 · 视频投放 · 无线同屏，一体化课堂演示中控</p>
+    <p class="desc">
+      面向一线教师的 Windows 桌面软件：把课前暖场音乐、课堂 PPT 放映、实验视频播放、无线同屏等高频操作，
+      集中到大字大图的大按钮面板上——老师无需翻找文件、切换窗口，点一下即可完成。
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="downloads/%E5%B0%8F%E5%A4%A9AIGC-Portable-0.1.0.exe" download>⬇ 点击下载</a>
+      <a class="btn btn-ghost" href="https://aicgxt.com" target="_blank" rel="noreferrer">访问官网 aicgxt.com →</a>
+    </div>
+    <div class="meta-badges">
+      <span>Windows 10 / 11（64 位）</span>
+      <span>安装版 + 便携版双形态</span>
+      <span>便携版免安装，U 盘随身带</span>
+      <span>全局快捷键，随时可控</span>
+    </div>
+
+    <div class="duo">
+      <div class="cell">
+        <span class="ico">🖥️</span>
+        <div>
+          <b>教师屏：主控面板</b>
+          <p>大字大图的大按钮面板显示在教师屏上，切歌、放映、计时一指完成。</p>
+        </div>
+      </div>
+      <div class="cell">
+        <span class="ico">📽️</span>
+        <div>
+          <b>投影屏：只放内容</b>
+          <p>PPT 放映、视频画面、无线同屏输出到投影屏，学生只看到该看的内容。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- 核心功能 -->
+  <section id="features">
+    <div class="sec-head">
+      <span class="tag">FEATURES</span>
+      <h2>核心功能</h2>
+      <p>课堂上的高频操作全部收进一个面板，点一下即可，不打断讲课节奏。</p>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <div class="ico" style="background:#ede9fe">🎵</div>
+        <h3>分类音乐曲库</h3>
+        <p>内置暖场、背景音乐、冥想、庆典、颁奖、上下舞台、上课铃声等 9 个场景分类、约 101 首正版授权音乐，点分类卡片即播；支持添加自有音乐（MP3 / WAV / M4A / OGG / FLAC）。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#fef3c7">🎚️</div>
+        <h3>音乐精细控制</h3>
+        <p>播放/暂停、上下首、音量、循环模式、静音一应俱全；双通道交叉淡入淡出（默认 2 秒，可调 1~4 秒），切歌不再有「咔」的硬切声。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#fee2e2">📊</div>
+        <h3>PPT 一键放映</h3>
+        <p>选定课件后一键在投影屏全屏放映，由本机 PowerPoint / WPS 本体执行，稳定可靠；面板上可遥控翻页，课件库支持长按拖动排序。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#dbeafe">🎬</div>
+        <h3>视频一键投放</h3>
+        <p>视频窗口固定到投影屏全屏播放，老师留在教师屏遥控：暂停/播放、快进快退、音量、停止，互不打扰。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#d1fae5">📡</div>
+        <h3>无线同屏</h3>
+        <p>同一 WiFi 下，手机 / 平板 / 电脑用浏览器扫码或输网址即可把屏幕投上大屏幕，发送端免安装任何软件或驱动。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#e0e7ff">⏱️</div>
+        <h3>课堂计时器</h3>
+        <p>倒计时预设 15 / 10 / 5 / 1 分钟或自定义时长，大字计时窗口可单独投到投影屏，限时练习、小组讨论都好用。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#fce7f3">🪟</div>
+        <h3>多种面板形态</h3>
+        <p>完整面板、迷你坞（收为小横条、贴边自动隐藏）、LED 单屏直控模式、窗口置顶，适配教室触控一体机与报告厅大屏。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#f0f9ff">🔗</div>
+        <h3>放映联动</h3>
+        <p>放映 PPT 或播放视频时，音乐自动淡出暂停；退出投屏后音乐从暂停处淡入恢复，也可在设置中关闭联动。</p>
+      </div>
+      <div class="card">
+        <div class="ico" style="background:#fef9c3">⌨️</div>
+        <h3>系统级全局快捷键</h3>
+        <p>面板最小化、焦点在放映窗口上时按键依然生效；退出软件自动注销全部快捷键，不占其他程序的键位。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 界面一览 -->
+  <section id="shots">
+    <div class="sec-head">
+      <span class="tag">SCREENSHOTS</span>
+      <h2>界面一览</h2>
+      <p>深色大按钮设计，为教室触控一体机而生。</p>
+    </div>
+    <div class="shots">
+      <figure class="shot">
+        <img src="screenshots/01-主面板.png" alt="主面板（控制台模式）">
+        <figcaption>主面板（控制台模式）：音乐区、投屏区、视频区、课堂工具区一屏尽览</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/03-音乐播放.png" alt="音乐播放">
+        <figcaption>音乐播放：分类卡片墙高亮当前分类，播放条显示曲目与进度</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/04-无线同屏.png" alt="无线同屏">
+        <figcaption>投屏区：无线同屏二维码与屏幕助手，实时显示检测结果</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/02-设置.png" alt="设置面板">
+        <figcaption>设置面板：资源库位置、淡入淡出、界面密度、快捷键改键，即时生效</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 运行环境 + 快捷键 -->
+  <section id="env">
+    <div class="sec-head">
+      <span class="tag">GETTING STARTED</span>
+      <h2>运行环境与快捷操作</h2>
+      <p>安装版与便携版功能完全一致，任选其一；首次启动若遇 SmartScreen 提示，点「更多信息 → 仍要运行」即可。</p>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <ul>
+          <li><b>操作系统</b><span>Windows 10 / 11（64 位）</span></li>
+          <li><b>PPT 放映</b><span>需安装 PowerPoint 或 WPS 演示之一；两者都装时优先调用 PowerPoint</span></li>
+          <li><b>显示器</b><span>单屏可用全部功能；双屏（教师屏 + 投影屏）体验最佳</span></li>
+          <li><b>无线同屏</b><span>发送设备与教室电脑处于同一 WiFi 局域网</span></li>
+          <li><b>视频格式</b><span>推荐 MP4（H.264 + AAC）；MKV / HEVC 建议先转码</span></li>
+        </ul>
+      </div>
+      <div class="panel keys">
+        <ul>
+          <li><b><kbd>Ctrl + F6</kbd></b><span>播放 / 暂停</span></li>
+          <li><b><kbd>Ctrl + F3 / F7</kbd></b><span>上一首 / 下一首</span></li>
+          <li><b><kbd>Ctrl + F1 / F2</kbd></b><span>放映当前 PPT / 退出投屏</span></li>
+          <li><b><kbd>Ctrl + F9 / F10</kbd></b><span>音量减 / 加</span></li>
+          <li><b><kbd>Ctrl + F11 / F12</kbd></b><span>上 / 下一个分类并播放</span></li>
+          <li><b><kbd>Alt + F7 / F8</kbd></b><span>计时器启停 / 重置</span></li>
+          <li><b><kbd>~ / Esc</kbd></b><span>面板全屏 / 退出全屏</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 开源许可 -->
+  <div class="license" id="license">
+    <span class="big">📖</span>
+    <div>
+      <h3>开源与版权</h3>
+      <p>
+        软件本体按 <b>MIT 许可证</b>发布；内置音乐为合法授权的开源音乐（<b>CC BY 4.0</b>），
+        曲名、作者与署名文本随软件附带（resources/music/licenses.md），使用时请保留署名信息。
+        规划中的功能：macOS 版本、课表联动、上下课铃自动播报、手机遥控等（以实际发布为准）。
+      </p>
+      <div class="chips">
+        <span>MIT License</span>
+        <span>CC BY 4.0 音乐</span>
+        <span>欢迎共建</span>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    小天 AIGC 课堂中控 · V0.1.0 · 官方网站 <a href="https://aicgxt.com" target="_blank" rel="noreferrer">aicgxt.com</a><br>
+    本页面内容整理自《小天 AIGC 课堂中控使用说明书》（2026 年 9 月）
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,122 @@
+[
+  {
+    "file": "01.png",
+    "label": "鎏金风华",
+    "source": "用户提供参考图（教务系统/LED背景）",
+    "sizeBytes": 1473548
+  },
+  {
+    "file": "02.svg",
+    "label": "盛典蓝",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 35647
+  },
+  {
+    "file": "03.svg",
+    "label": "喜庆红",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 19517
+  },
+  {
+    "file": "04.svg",
+    "label": "紫金会宴",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 13561
+  },
+  {
+    "file": "05.svg",
+    "label": "科技蓝",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 15634
+  },
+  {
+    "file": "06.svg",
+    "label": "学术青",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 23983
+  },
+  {
+    "file": "07.svg",
+    "label": "金色大厅",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 15484
+  },
+  {
+    "file": "08.svg",
+    "label": "红绸迎宾",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 11293
+  },
+  {
+    "file": "09.svg",
+    "label": "深蓝光柱",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 17927
+  },
+  {
+    "file": "10.svg",
+    "label": "峰会灰蓝",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 10809
+  },
+  {
+    "file": "11.svg",
+    "label": "暖橙礼遇",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 11843
+  },
+  {
+    "file": "12.svg",
+    "label": "红金筑梦",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 14167
+  },
+  {
+    "file": "13.svg",
+    "label": "蓝金致远",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 13308
+  },
+  {
+    "file": "14.svg",
+    "label": "青云致远",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 11160
+  },
+  {
+    "file": "15.svg",
+    "label": "晨曦鎏光",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 11894
+  },
+  {
+    "file": "16.svg",
+    "label": "朱红盛典",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 17085
+  },
+  {
+    "file": "17.svg",
+    "label": "深空鎏金",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 29387
+  },
+  {
+    "file": "18.svg",
+    "label": "霁蓝轻纱",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 10795
+  },
+  {
+    "file": "19.svg",
+    "label": "墨玉华章",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 9818
+  },
+  {
+    "file": "20.svg",
+    "label": "盛世红轴",
+    "source": "程序化自绘（CC0，scripts/gen-welcome-bg.js 生成）",
+    "sizeBytes": 11425
+  }
+]

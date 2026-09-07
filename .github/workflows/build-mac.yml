@@ -1,0 +1,33 @@
+# 一键构建 macOS 版（在 GitHub 网页走到 Actions → build-mac → Run workflow）
+# 原因：macOS 安装包（dmg/zip）无法在 Windows 本机产品，必须在 macOS 环境/CI 构建。
+name: build-mac
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci || npm install
+
+      - name: 构建 macOS（Apple Silicon + Intel）
+        working-directory: app
+        run: npx electron-builder --mac --publish never
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaotian-aigc-mac
+          path: 软件封装/*.zip
+          retention-days: 14

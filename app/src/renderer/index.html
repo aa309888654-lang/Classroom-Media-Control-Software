@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; media-src 'self' file: blob: mediastream:; connect-src 'self' file: http://127.0.0.1:* http://localhost:*;" />
+  <title>小天AIGC · 课堂中控</title>
+  <link rel="stylesheet" href="assets/styles.css" />
+  <link rel="stylesheet" href="assets/welcome.css" />
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <img class="logo" src="assets/logo.png" alt="小天AIGC" />
+      <div class="brand-text">
+        <span class="brand-name">小天AIGC</span>
+        <span class="brand-sub">课堂中控</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btnWelcome" class="chip" title="文字欢迎屏：上 LED 大屏显示欢迎语"><span class="ico" data-ico="party" data-ico-size="13"></span> 欢迎</button>
+      <button id="btnMode" class="chip" title="切换模式：控制台 ↔ LED投屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 切到LED投屏</button>
+      <button id="btnMini" class="chip" title="迷你模式：极小控制面板，拖到右下角自动隐藏，鼠标靠近浮现"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 迷你</button>
+      <button id="btnPin" class="chip" title="窗口置顶"><span class="ico" data-ico="pin" data-ico-size="13"></span> 置顶</button>
+      <button id="btnSettings" class="chip" title="设置"><span class="ico" data-ico="settings" data-ico-size="13"></span> 设置</button>
+    </div>
+  </header>
+
+  <!-- LED 模式：内联视频播放器（全屏覆盖内容区） -->
+  <video id="ledVideo" class="led-video" hidden></video>
+
+  <!-- LED 模式：待机画面 -->
+  <div id="ledIdle" class="led-idle" hidden>
+    <img class="led-idle-logo" src="assets/logo.png" alt="" />
+    <div class="led-idle-text">小天AIGC · 课堂中控</div>
+    <div class="led-idle-hint">左下角 🖥 返回控制台</div>
+  </div>
+
+  <!-- LED 模式：左下角浮动控制条 -->
+  <div id="ledDock" class="led-dock" hidden>
+    <button id="ledDockToggle" class="led-dock-btn" title="显示/隐藏控制条"><span class="ico" data-ico="settings" data-ico-size="15"></span></button>
+    <button id="ledModeBack" class="led-dock-btn" title="返回控制台模式"><span class="ico" data-ico="monitor" data-ico-size="15"></span></button>
+    <div id="ledPanel" class="led-panel" style="display:none">
+      <div class="led-row">
+        <span class="led-label">PPT</span>
+        <button class="led-btn" id="ledPptPrev" title="上一页"><span class="ico" data-ico="skip-back" data-ico-size="13"></span></button>
+        <button class="led-btn led-btn-primary" id="ledPptPresent" title="放映/退出"><span class="ico" data-ico="play" data-ico-size="13"></span></button>
+        <button class="led-btn" id="ledPptNext" title="下一页"><span class="ico" data-ico="skip-forward" data-ico-size="13"></span></button>
+      </div>
+      <div class="led-row">
+        <span class="led-label">视频</span>
+        <button class="led-btn" id="ledVBack" title="后退10秒"><span class="ico" data-ico="rewind" data-ico-size="13"></span></button>
+        <button class="led-btn led-btn-primary" id="ledVToggle" title="暂停/继续"><span class="ico" data-ico="play" data-ico-size="14"></span></button>
+        <button class="led-btn led-btn-primary" id="ledVFwd" title="前进10秒"><span class="ico" data-ico="forward" data-ico-size="13"></span></button>
+        <button class="led-btn" id="ledVPick" title="选择视频"><span class="ico" data-ico="folder" data-ico-size="13"></span></button>
+        <button class="led-btn led-btn-danger" id="ledVStop" title="停止"><span class="ico" data-ico="stop" data-ico-size="13"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 迷你模式：极小横排控制条（单屏 LED 场景；拖到右下角自动隐藏，鼠标靠近浮现） -->
+  <div id="miniDock" class="mini-dock" hidden>
+    <div class="mini-status" id="miniStatus" title="当前状态">未在播放</div>
+    <div class="mini-row">
+      <button id="miniCat" class="mini-btn" title="切换音乐分类"><span class="ico" data-ico="music" data-ico-size="16"></span></button>
+      <button id="miniPlay" class="mini-btn primary" title="播放/暂停"><span class="ico" data-ico="play" data-ico-size="18"></span></button>
+      <button id="miniNext" class="mini-btn" title="下一首"><span class="ico" data-ico="skip-forward" data-ico-size="16"></span></button>
+      <span class="mini-sep"></span>
+      <button id="miniPptImport" class="mini-btn" title="导入/选择课件"><span class="ico" data-ico="import" data-ico-size="16"></span></button>
+      <button id="miniPptPresent" class="mini-btn primary" title="放映/退出投屏"><span class="ico" data-ico="presentation" data-ico-size="16"></span></button>
+      <button id="miniPptPrev" class="mini-btn" title="上一页"><span class="ico" data-ico="skip-back" data-ico-size="16"></span></button>
+      <button id="miniPptNext" class="mini-btn" title="下一页"><span class="ico" data-ico="skip-forward" data-ico-size="16"></span></button>
+      <span class="mini-sep"></span>
+      <button id="miniExpand" class="mini-btn" title="展开完整面板"><span class="ico" data-ico="fullscreen" data-ico-size="15"></span></button>
+    </div>
+    <button id="miniHandle" class="mini-handle" title="鼠标靠近展开"><span class="ico" data-ico="music" data-ico-size="18"></span></button>
+  </div>
+
+  <main class="content" role="main">
+    <!-- ============ 音乐 ============ -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="ico" data-ico="music" data-ico-size="16"></span> 音乐</h2>
+        <span class="hint mono" id="hkHintMusic">快捷键 Ctrl+F6 播放/暂停 · Ctrl+F3/F7 切歌 · Ctrl+F8 静音 · Ctrl+F9/F10 音量−/＋ · Ctrl+F11/F12 切分类 · ~ 全屏 · Esc 退出全屏 · 长按卡片排序 · ☆置顶 · ⤒导入</span>
+        <button id="btnAddMode" class="chip chip-mini" title="显示/收起各分类的添加音乐按钮"><span class="ico" data-ico="plus" data-ico-size="12"></span> 添加音乐</button>
+      </div>
+
+      <div id="catCards" class="cat-cards" aria-label="音乐分类"></div>
+
+      <div class="now-playing">
+        <div class="np-meta">
+          <div class="np-eq" id="npEq"><i></i><i></i><i></i></div>
+          <div class="np-text">
+            <div class="np-track" id="nowTrack">未在播放</div>
+            <div class="np-cat" id="nowCat">选择一个分类开始播放</div>
+          </div>
+        </div>
+        <div class="np-controls">
+          <button id="btnPrev" class="icon-btn" data-hk="prev" title="上一首 (Ctrl+F3)"><span class="ico" data-ico="previous" data-ico-size="16"></span></button>
+          <button id="btnPlay" class="icon-btn primary" data-hk="playPause" title="播放/暂停 (Ctrl+F6)"><span class="ico" data-ico="play" data-ico-size="18"></span></button>
+          <button id="btnNext" class="icon-btn" data-hk="next" title="下一首 (Ctrl+F7)"><span class="ico" data-ico="next" data-ico-size="16"></span></button>
+          <div class="vol-wrap">
+            <span class="mono vol-icon"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></span>
+            <input id="vol" type="range" min="0" max="100" value="70" />
+            <span id="volVal" class="mono vol-val">70%</span>
+          </div>
+          <button id="btnLoop" class="chip" title="循环模式">循环：列表</button>
+        </div>
+        <div class="np-bottom">
+          <div class="np-progress" id="npProgress" style="display:none" title="点击跳转播放进度">
+            <div class="np-progress-fill" id="npFill"></div>
+          </div>
+          <span class="np-time mono" id="npTime" style="display:none">0:00 / 0:00</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 投屏 ============ -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="ico" data-ico="presentation" data-ico-size="16"></span> 投屏</h2>
+        <span class="hint mono" id="hkHintPpt">PPT 放映在投影屏全屏 · Ctrl+F1 放映 · Ctrl+F2 退出 · 课件库长按拖动排序</span>
+      </div>
+
+      <div class="grid-2">
+        <div class="card ppt-card">
+          <div class="card-label">当前课件</div>
+          <div class="card-value" id="pptFile">未选择</div>
+          <div class="card-row">
+            <button id="btnPickPpt" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 选择课件</button>
+            <div class="recents" id="pptRecents"></div>
+          </div>
+          <div class="ppt-chips" id="pptChips"></div>
+          <div class="card-row" id="pptFlipRow" style="display:none">
+            <button class="btn btn-sm" id="btnPptPrev"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 上一页</button>
+            <span class="mono" id="pptPageInfo" style="font-size:11px;color:var(--text-dim);flex:1;text-align:center">—</span>
+            <button class="btn btn-sm" id="btnPptNext"><span class="ico" data-ico="forward" data-ico-size="13"></span> 下一页</button>
+          </div>
+          <div class="presenter-strip" id="presenterStrip" style="display:none">
+            <img id="pptCurImg" class="ppt-thumb" alt="当前页" />
+            <div class="presenter-notes">
+              <div class="card-label">当前页备注</div>
+              <div class="notes-text" id="pptNotes">—</div>
+              <div class="card-label" style="margin-top:6px">下一页备注</div>
+              <div class="notes-text dim" id="pptNextNotes">—</div>
+            </div>
+            <img id="pptNextImg" class="ppt-thumb" alt="下一页" />
+          </div>
+          <div class="card-actions">
+            <button id="btnPresent" class="btn btn-primary btn-lg"><span class="ico" data-ico="play" data-ico-size="15"></span> 一键放映 PPT</button>
+            <button id="btnExitPresent" class="btn btn-danger btn-lg" disabled><span class="ico" data-ico="x" data-ico-size="13"></span> 退出投屏</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">无线同屏</div>
+          <div class="card-value dim">同一 WiFi 下，手机/电脑浏览器扫码打开网址：安卓/电脑可实时镜像投屏（首次需在加密页点「继续前往」）；苹果手机用页面上「上传上屏」传照片/视频</div>
+          <div class="card-row">
+            <button id="btnCast" class="btn btn-primary">📶 开启同屏</button>
+            <span class="badge" id="castBadge">未开启</span>
+          </div>
+          <div class="cast-info" id="castInfo" style="display:none">
+            <canvas id="castQr" width="156" height="156"></canvas>
+            <div class="cast-url-box mono" id="castUrl">—</div>
+            <div class="form-tip">手机打不开网址：允许 Windows 防火墙放行本软件；仍不通则路由器开了「AP 隔离」，需关闭。苹果手机请用发送页的「上传上屏」</div>
+          </div>
+          <div class="card-label" style="margin-top:14px">屏幕助手</div>
+          <div class="card-value dim" id="dispInfo">检测显示器中…</div>
+          <div class="card-row" id="extendRow">
+            <button id="btnExtend" class="btn btn-sm">🖥 一键扩展模式</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 视频 ============ -->
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="ico" data-ico="film" data-ico-size="16"></span> 视频</h2>
+        <span class="hint mono">视频投到投影屏全屏 · 面板遥控 · 长按拖动排序</span>
+      </div>
+      <div class="card">
+        <div class="video-chips" id="videoChips"></div>
+        <div class="card-row video-remote" id="videoRemote" style="display:none">
+          <button class="btn btn-sm" id="btnVBack" title="后退10秒"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 10s</button>
+          <button class="btn btn-sm" id="btnVToggle"><span class="ico" data-ico="play" data-ico-size="13"></span> 暂停/继续</button>
+          <button class="btn btn-sm" id="btnVFwd" title="前进10秒"><span class="ico" data-ico="forward" data-ico-size="13"></span> 10s</button>
+          <button class="btn btn-sm" id="btnVVolDown"><span class="ico" data-ico="volume-x" data-ico-size="13"></span> 音量−</button>
+          <button class="btn btn-sm" id="btnVVolUp"><span class="ico" data-ico="volume-2" data-ico-size="13"></span> 音量+</button>
+        </div>
+        <div class="card-actions">
+          <button id="btnPickVideo" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 选择视频</button>
+          <button id="btnStopVideo" class="btn btn-danger" disabled><span class="ico" data-ico="stop" data-ico-size="13"></span> 停止视频</button>
+          <span class="hint" id="videoHint"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 课堂工具 ============ -->
+    <section class="panel" aria-label="课堂工具">
+      <div class="panel-head">
+        <h2><span class="ico" data-ico="timer" data-ico-size="16"></span> 课堂工具</h2>
+        <span class="hint mono" id="hkHintTimer">计时 Alt+F7 启停 · Alt+F8 重置</span>
+      </div>
+      <div class="card tm-bar">
+        <span class="card-label" style="margin:0">⏱ 计时器</span>
+        <div class="chip-row" id="tmModes">
+          <span class="chip on" data-mode="countdown">倒计时</span>
+          <span class="chip" data-mode="countup">正计时</span>
+          <span class="chip" data-mode="stopwatch">秒表</span>
+        </div>
+        <div class="tm-time mono" id="tmDisplay">00:00</div>
+        <div class="card-row" id="tmPresets" style="margin:0">
+          <button class="btn btn-sm" data-min="1">1分</button>
+          <button class="btn btn-sm" data-min="5">5分</button>
+          <button class="btn btn-sm" data-min="10">10分</button>
+          <button class="btn btn-sm" data-min="15">15分</button>
+          <input id="tmCustom" class="tm-input mono" placeholder="分:秒" title="自定义时长，如 2:30" />
+          <button class="btn btn-sm" id="tmSetCustom">设定</button>
+        </div>
+        <div class="card-actions" style="margin:0">
+          <button id="tmToggle" class="btn btn-primary btn-sm" style="min-width:86px"><span class="ico" data-ico="play" data-ico-size="13"></span> 开始</button>
+          <button id="tmReset" class="btn btn-sm" title="重置"><span class="ico" data-ico="reset" data-ico-size="14"></span></button>
+          <button id="tmShow" class="btn btn-sm" title="投影屏显示/隐藏计时窗口"><span class="ico" data-ico="monitor" data-ico-size="14"></span></button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar mono" role="contentinfo">
+    <span id="stOffice">Office：检测中…</span>
+    <span class="sep">│</span>
+    <span id="stDisp">显示器：检测中…</span>
+    <span class="sep">│</span>
+    <span id="stMode"><i class="dot idle"></i> 空闲</span>
+    <span class="flex"></span>
+    <span id="stVer">v0.1.0</span>
+    <span class="sep">│</span>
+    <span id="stSite" class="site-static">https://aicgxt.com</span>
+  </footer>
+
+  <!-- 设置弹窗 -->
+  <div class="overlay" id="settingsOverlay" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3><span class="ico" data-ico="settings" data-ico-size="16"></span> 设置</h3>
+        <button id="btnCloseSettings" class="icon-btn small"><span class="ico" data-ico="x" data-ico-size="13"></span></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label>音乐文件夹</label>
+          <div class="form-ctrl"><span class="path mono" id="setMusicDir"></span>
+            <button id="btnPickMusicDir" class="btn btn-sm">选择</button></div>
+          <p class="form-tip">每个子文件夹 = 一个分类（如 暖场/轻松），放入 MP3/WAV 即进曲库</p>
+        </div>
+        <div class="form-row">
+          <label>视频文件夹</label>
+          <div class="form-ctrl"><span class="path mono" id="setVideoDir"></span>
+            <button id="btnPickVideoDir" class="btn btn-sm">选择</button></div>
+        </div>
+        <div class="form-row">
+          <label>课件文件夹</label>
+          <div class="form-ctrl"><span class="path mono" id="setPptDir"></span>
+            <button id="btnPickPptDir" class="btn btn-sm">选择</button></div>
+          <p class="form-tip">放入 PPT/PPTX 即进课件库，投屏页点选即放映；长按拖动可排序</p>
+        </div>
+        <div class="form-row">
+          <label>迷你模式</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setMiniAutoHide" checked /><i></i></label>
+            <span class="form-tip">迷你面板贴在屏幕右下角时自动隐藏，鼠标靠近浮现</span></div>
+        </div>
+        <div class="form-row">
+          <label>内置音乐</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setBuiltin" /><i></i></label>
+            <span class="form-tip">关闭即<strong>隐藏全部内置音乐</strong>，只显示你自己添加的歌曲</span></div>
+        </div>
+        <div class="form-row">
+          <label>切歌淡入淡出</label>
+          <div class="form-ctrl">
+            <select id="setCrossfade">
+              <option value="1">1 秒</option>
+              <option value="2" selected>2 秒</option>
+              <option value="3">3 秒</option>
+              <option value="4">4 秒</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>界面密度</label>
+          <div class="form-ctrl">
+            <select id="setDensity">
+              <option value="compact" selected>紧凑（推荐）</option>
+              <option value="roomy">宽松（触屏大按钮）</option>
+            </select>
+            <span class="form-tip">触屏一体机建议用宽松</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>显示模式</label>
+          <div class="form-ctrl">
+            <select id="setDisplayMode">
+              <option value="control" selected>控制台（双屏控制）</option>
+              <option value="led">LED 投屏（本窗口全屏投屏）</option>
+            </select>
+            <span class="form-tip">双屏选控制台；单屏直连LED选投屏</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>退出投屏后</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setRestore" /><i></i></label>
+            <span class="form-tip">自动恢复之前播放的音乐</span></div>
+        </div>
+        <div class="form-row">
+          <label>退出放映时</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setClosePp" /><i></i></label>
+            <span class="form-tip" id="pptCloseTip">同时关闭 PowerPoint/WPS 程序</span></div>
+        </div>
+        <div class="form-row">
+          <label>快捷键</label>
+          <div class="form-ctrl col">
+            <div id="hotkeyList" class="hotkey-list"></div>
+            <p class="form-tip">点击键位后按下新组合（Esc 取消）；灰色为系统占用冲突</p>
+          </div>
+        </div>
+        <div class="form-row site-row">
+          <label>官方网站</label>
+          <div class="form-ctrl">
+            <button id="setSite" class="btn btn-primary">🌐 打开官网</button>
+            <span class="form-tip">获取最新版本与曲库更新 · aicgxt.com</span>
+          </div>
+        </div>
+        <div class="form-row site-row">
+          <label>赞助支持</label>
+          <div class="form-ctrl">
+            <button id="btnSponsor" class="btn btn-primary">❤ 赞助我们</button>
+            <span class="form-tip">如果软件对您的课堂有帮助，欢迎支持项目持续更新</span>
+          </div>
+        </div>
+        <div class="form-row site-row">
+          <label>联系邮箱</label>
+          <div class="form-ctrl">
+            <code id="contactEmail" class="mail-copy" title="点击复制邮箱">aa309888654@gmail.com</code>
+            <span class="form-tip">点击即复制</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button id="btnSaveSettings" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 欢迎屏设置弹窗 -->
+  <div class="overlay" id="welcomeOverlay" hidden>
+    <div class="modal" style="width:860px">
+      <div class="modal-head">
+        <h3><span class="ico" data-ico="party" data-ico-size="16"></span> 文字欢迎屏</h3>
+        <button id="btnCloseWelcome" class="icon-btn small"><span class="ico" data-ico="x" data-ico-size="12"></span></button>
+      </div>
+      <div class="modal-body">
+        <div class="wl-grid">
+          <div class="wl-left">
+            <label class="wl-label">欢迎文字（支持多行）</label>
+            <textarea id="wlText" class="wl-textarea" spellcheck="false"></textarea>
+            <label class="wl-label" style="margin-top:12px">副标题（可选，小字）</label>
+            <input id="wlSub" class="wl-input" spellcheck="false" />
+            <label class="wl-label" style="margin-top:12px">文字样式（点选）</label>
+            <div id="wlStyles" class="wl-styles"></div>
+            <label class="wl-label" style="margin-top:12px">字体（点选即换）</label>
+            <div id="wlFonts" class="wl-fonts"></div>
+            <label class="wl-label" style="margin-top:12px">LOGO（PNG · 默认左上角，可选位置）</label>
+            <div class="wl-logo-row">
+              <div class="wl-logo-thumb" id="wlLogoThumb">
+                <img id="wlLogoImg" alt="" />
+                <span class="wl-logo-empty" id="wlLogoEmpty">未设置</span>
+              </div>
+              <div class="wl-logo-ops">
+                <button id="btnWlLogoPick" class="btn btn-sm">选择 PNG…</button>
+                <button id="btnWlLogoClear" class="btn btn-sm btn-danger" disabled>清除</button>
+              </div>
+              <div id="wlLogoPos" class="wl-logo-pos"></div>
+            </div>
+            <label class="wl-label" style="margin-top:12px">背景（点选缩略图，共 20 套）</label>
+            <div id="wlBgs" class="wl-bgs"></div>
+          </div>
+          <div class="wl-right">
+            <label class="wl-label">即开即见预览</label>
+            <div id="wlPreview" class="wl-preview"></div>
+            <div class="wl-actions">
+              <button id="btnWelcomeOpen" class="btn btn-primary btn-lg"><span class="ico" data-ico="cast" data-ico-size="14"></span> 开屏（上 LED）</button>
+              <button id="btnWelcomeClose" class="btn btn-danger" disabled><span class="ico" data-ico="x" data-ico-size="12"></span> 关屏</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <div id="osd" class="osd mono" hidden></div>
+
+  <!-- 通用确认弹层（删除分类等） -->
+  <div class="overlay" id="confirmOverlay" hidden>
+      <div class="modal" style="width:400px">
+      <div class="modal-head"><h3 id="confirmTitle"><span class="ico" data-ico="trash" data-ico-size="14"></span> 确认</h3></div>
+      <div class="modal-body"><p id="confirmText" style="font-size:13px;color:var(--text-dim);line-height:1.7"></p></div>
+      <div class="modal-foot">
+        <button id="btnConfirmCancel" class="btn">取消</button>
+        <button id="btnConfirmOk" class="btn btn-danger">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/vendor/qr-lite.js"></script>
+  <script src="assets/vendor/icons.js"></script>
+  <script src="assets/castReceiver.js"></script>
+  <script src="assets/audioEngine.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
