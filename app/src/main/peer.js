@@ -53,7 +53,11 @@ function mergePeers(list, incoming, now) {
     name: incoming.name || (prev && prev.name) || incoming.ip,
     lastSeen: now,
   });
-  return [...map.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // 显式指定 zh-Hans-CN：localeCompare() 不带 locale 时跟随**系统语言**，
+  // 英文环境下（en-US）中文会退化成按 Unicode 码点排序 —— 同一份设备表
+  // 在中文机和英文机上顺序不一致（办公室/会议室/三年二班 → 三年二班/会议室/办公室）。
+  // GitHub Actions 的 windows runner 就是英文环境，这条曾导致 peer.test.js 挂掉。
+  return [...map.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'));
 }
 
 /* ---------- 信标广播（被控端；随同屏服务启停） ---------- */
