@@ -10,17 +10,44 @@ const IS_MAC = process.platform === 'darwin';
 
 const config = require('./config');
 const displays = require('./displays');
+const transcode = require('./transcode');
+const thumbs = require('./thumbs');
+
+// 兼容模式必须在 app ready 前调用：读配置（同步）后禁用 GPU 硬件加速
+// 老旧教室一体机显卡驱动弱，Electron 文字渲染花屏/乱码时开启此项
+config.load();
+if (config.get().compatMode) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu-compositing');
+}
 const officeDetector = require('./officeDetector');
 const pptController = require('./pptController');
+const pptServer = require('./pptServer');
 const library = require('./library');
 const hotkeys = require('./hotkeys');
 const videoWindow = require('./videoWindow');
 const timer = require('./timer');
 const castServer = require('./castServer');
 const castWindow = require('./castWindow');
+const peer = require('./peer');
+const peerClient = require('./peerClient');
+const floatBar = require('./floatBar');
 const brand = require('./brand');
 const welcomeWindow = require('./welcomeWindow');
+const pptExport = require('./pptExport');
 const { getResourcesPath } = require('./paths');
+
+// 主进程兜底（GAP-04）：未捕获异常/未处理拒绝不再让整个课堂进程静默消失，
+// 先落到 userData/logs/main-error.log，再打印；避免崩溃时连日志都没有、无从排查。
+function logFatal(tag, x) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'main-error.log'), `[${new Date().toISOString()}] ${tag}: ${x && x.stack ? x.stack : String(x)}\n`);
+  } catch { }
+}
+process.on('uncaughtException', (err) => { logFatal('uncaughtException', err); console.error('[uncaughtException]', err); });
+process.on('unhandledRejection', (reason) => { logFatal('unhandledRejection', reason); console.error('[unhandledRejection]', reason); });
 
 let brandm = null; // 解密后的品牌数据：名称/版本/官网/赞助/hosts；null=未核验通过
 let miniDocked = false;              // 迷你面板当前是否贴在右下角（贴着才允许自动隐藏）
@@ -53,6 +80,7 @@ let lastPptFile = '';
 let presentSeq = 0; // 放映动作序号：退出投屏可打断进行中的放映
 let hotkeyConflicts = [];
 let musicMemo = { playing: false, category: '', track: '' };
+let lastVideoFile = ''; // 上次起播的视频：遥控端「播放/暂停」在空闲时据此续播（遥控端没有选片列表）
 
 const sm = { mode: 'idle' }; // idle | ppt | video
 
@@ -62,6 +90,50 @@ function broadcast(channel, payload) {
 
 function toast(text, type = 'info') {
   broadcast('toast', { text, type });
+}
+
+// 配置写盘失败（磁盘满/只读/杀软锁文件）必须让用户看见，否则等于静默丢配置。
+// 节流 3s：拖动窗口等高频 save 可能连续失败，只提示一次。
+let cfgErrToastAt = 0;
+config.onSaveError((msg) => {
+  const now = Date.now();
+  if (now - cfgErrToastAt < 3000) return;
+  cfgErrToastAt = now;
+  toast(`设置未能保存（${msg}），请检查磁盘空间或权限`, 'error');
+});
+
+// 置顶的「固定」语义：面板浮在放映软件（PPT 全屏等）之上，老师随时够得着控制按钮。
+// PPT 全屏窗口出现/重新聚焦时会盖掉普通置顶，这里按需把面板重新压回顶层。
+// force=true 跳过节流（放映弹出等关键时刻连发补救）；轮询 tick 走节流：
+// moveTop 是强制 z-order 操作，翻页期 400ms/次纯属白干还占 CPU（PERF-12）
+let lastOnTopAt = 0;
+function assertAlwaysOnTop(force = false) {
+  if (!win || win.isDestroyed() || !alwaysOnTop) return;
+  const now = Date.now();
+  if (!force && now - lastOnTopAt < 2000) return;
+  lastOnTopAt = now;
+  try {
+    win.setAlwaysOnTop(true, 'screen-saver');
+    if (process.platform === 'win32') win.moveTop();
+  } catch { }
+}
+
+// 同屏彻底收场的**唯一出口**。
+// 历史上这里有三条各自为政的清理路径（面板停止 / ESC 关窗 / 拔掉投影线），每条都漏了不同的一步：
+//   · ESC 关窗漏了 peer.stopBeacon() → UDP 信标每 2s 继续广播主机名，本机永久出现在别人设备列表里；
+//   · 拔投影线漏了 castServer.stop()  → HTTP 服务继续对外，发送端仍能上传，queues.receiver 持续堆积。
+// 现在统一走这里，保证 bye/stop/关窗/撤信标/状态广播五步一个不少。
+async function teardownCast() {
+  try { castServer.bye(); } catch { }    // 通知发送端释放共享
+  castWindow.close();                    // 注意：close() 不触发 onClosedCb，不会递归回来
+  await castServer.stop();               // 关 HTTP/HTTPS + closeAllConnections + 作废 token
+  peer.stopBeacon();                     // 同屏停了，遥控 API 也停了，信标同步撤下
+  broadcast('cast:state', { running: false });
+}
+
+// 停止无线同屏（放映 PPT 等独占投影屏的动作统一走这里清场）
+async function stopCast() {
+  await teardownCast();
 }
 
 function createWindow() {
@@ -185,6 +257,7 @@ async function quitApp() {
   quitting = true;
   // 退出即清场：视频、计时窗口、PPT 放映全部同时收掉（音乐随窗口销毁自动停止）
   try { welcomeWindow.close(); } catch { }
+  try { floatBar.close(); } catch { }
   try { videoWindow.stop(true); } catch { }
   try { timer.closeWindow(); } catch { }
   // 无线同屏：通知发送端离开 + 关接收窗口 + 停信令服务
@@ -197,6 +270,12 @@ async function quitApp() {
       await pptController.exitPresent(config.get().exitAction.closePowerpoint);
     }
   } catch { }
+  // 预打开（放映预热）期间由我们拉起的 PowerPoint 统一关闭，不留后台进程
+  try { await pptController.runCtl('shutdown', {}, 4000, 'ctl'); } catch { }
+  try { pptServer.close(); } catch { } // 收掉常驻 PowerShell 与在途请求（BUG-14）
+  // ffmpeg 子进程：转码/抽帧途中退出程序时若不杀，ffmpeg 会变孤儿继续占 CPU 写盘（大文件可达 10 分钟）
+  try { transcode.killAll(); } catch { }
+  try { thumbs.killAll(); } catch { }
   app.quit();
 }
 
@@ -219,17 +298,123 @@ const PPT_ERRORS = IS_MAC ? {
   'spawn-failed': '无法启动 PowerShell（被杀毒软件拦截？）',
 };
 
+// ---------- 演讲者缩略图（5 页胶片） ----------
+// 导出缓存目录逻辑已抽到 ./pptExport（GAP-09）：路径哈希键控防串图（BUG-03）+ 14 天 TTL（GAP-10）
+// 过期缓存清扫改为异步 + 延后到窗口起来之后（原本是同步 readdirSync/rmSync/statSync，
+// 在模块顶层（app ready 之前）执行会让开机黑屏 1~3s，老机更久）。
+setTimeout(() => {
+  Promise.allSettled([pptExport.sweep(), transcode.sweepMediaCache()]);
+  // 顺带把投屏证书预生成好：keygen 是同步重活，放在用户点「无线同屏」那一刻会像假死
+  try { castServer.warmCert(); } catch { }
+}, 2000);
+const pptExportDir = pptExport.exportDir;
+let pptLastPos = 0;
+let pptLastTotal = 0;
+let pptLastBroadcast = ''; // 最近一次 ppt:presenter 广播内容签名：内容没变不广播，面板不重复重绘
+let presenterBusy = false; // presenter 调用防重入（导图慢时跳过本轮，下轮再补）
+let pptLastFlipAt = 0;     // 最近一次翻页/跳页/开播时间：翻页进行中不给导图任务（保 PowerPoint 主线程，PERF-12）
+const PPT_EXPORT_CALM_MS = 600; // 翻页静默期：距上次翻页超过它才允许现场导图
+
+function noteFlip() { pptLastFlipAt = Date.now(); }
+
+function broadcastPresenterIfChanged(full) {
+  pptLastTotal = full.total || pptLastTotal;
+  const sig = JSON.stringify([
+    full.position, full.total, full.notes, full.nextNotes,
+    (full.pages || []).map((p) => `${p.page}:${p.img}`),
+  ]);
+  if (sig === pptLastBroadcast) return;
+  pptLastBroadcast = sig;
+  broadcast('ppt:presenter', full);
+}
+
+// 老师手动关了放映/PowerPoint：复位面板状态（与旧 5s 状态轮询行为一致）
+async function handleShowGone() {
+  await pptController.syncStatus(); // 让主进程状态与 COM 实际一致（presenting=false）
+  pptLastPos = 0;
+  pptLastBroadcast = '';
+  sm.mode = 'idle';
+  floatBar.close(); // 老师手动退了放映：悬浮条一并收掉
+  broadcast('ppt:state', { presenting: false, file: '', loading: false });
+}
+
+// 演讲者信息统一轮询（thumb 通道）：一次调用拿页码/备注/缩略图，导图不再与翻页命令同通道排队。
+// 翻页/跳页/开播后会立即直调一次（页码先由翻页结果即时广播，胶片由此跟上）
+async function pollPresenter() {
+  if (presenterBusy || !pptController.getState().presenting) return;
+  presenterBusy = true;
+  try {
+    // 静默期才导图：翻页瞬间/轮询密集期 presenter 只读已缓存页，Export 不和幻灯片渲染抢主线程（PERF-12）
+    // 遥控器/键盘翻页不经过本进程，由轮询检测到页码变化时补记 noteFlip（见 presenterPoll）
+    const calm = Date.now() - pptLastFlipAt >= PPT_EXPORT_CALM_MS;
+    const full = await pptController.presenterInfo(pptExportDir(pptController.getState().file), { noexport: !calm });
+    if (full.ok && full.presenting) {
+      pptLastPos = full.position;
+      broadcastPresenterIfChanged(full);
+      return full;
+    }
+    // presenter 说已不在放映（或通路异常再用 status 复核）→ 按手动退出处理
+    // 严格判 false：通路故障时 status 拿不到字段，不能误当「放映已结束」把面板复位
+    const s = full.ok ? { presenting: false } : await pptController.syncStatus();
+    if (s.presenting === false) await handleShowGone();
+  } catch { } finally {
+    presenterBusy = false;
+  }
+}
+
 async function presentPpt(file) {
   if (!file) {
     toast('请先选择要放映的课件', 'warn');
     return { ok: false, error: 'no-file' };
   }
+  // 幂等防护：全局快捷键/托盘入口在放映中也能触发，重复放映会报错或重复开档。
+  // 以真实 COM 状态为准（老师可能刚手动退出、轮询尚未同步）：
+  // 同一课件 → 直接返回成功（无副作用）；不同课件 → 先退当前再映新的
+  if (pptController.getState().presenting) {
+    const real = await pptController.syncStatus();
+    if (real.presenting) {
+      const same = real.file && path.normalize(real.file).toLowerCase() === path.normalize(file).toLowerCase();
+      if (same) {
+        toast('该课件正在放映中', 'info');
+        return { ok: true, mode: 'already', state: pptController.getState() };
+      }
+      await exitPresent();
+    }
+  }
   if (videoWindow.isPlaying()) videoWindow.stop(true);
-  // 切扩展模式是 Windows 专属能力（DisplaySwitch）；macOS 外接默认即扩展，LED 单屏模式下也无意义
-  if (!IS_MAC && config.get().display.forceExtendOnPresent && config.get().displayMode !== 'led') displays.extendMode();
+  // 非 PPT 文档（PDF/Word/Excel/图片…）：用系统默认程序打开投屏，不走 COM（无翻页/胶片/备注集成控制）
+  const ext = path.extname(file).toLowerCase();
+  if (!library.isPptExt(ext)) {
+    if (welcomeWindow.isOpen()) { welcomeWindow.close(); broadcast('welcome:state', { open: false }); }
+    if (castServer.running()) await stopCast();
+    const { shell } = require('electron');
+    const opened = shell.openPath(file);
+    if (opened) {
+      toast(`已用默认程序打开「${path.basename(file)}」：翻页/退出请在该程序里操作（PPT 才有集成控制）`, 'info');
+      return { ok: true, mode: 'document', state: pptController.getState() };
+    }
+    toast(`打不开「${path.basename(file)}」：系统未关联可打开它的程序`, 'error');
+    return { ok: false, error: 'open-failed' };
+  }
+  // 投影屏是独占的：放映 PPT 前收掉欢迎屏与无线同屏。
+  // 同屏窗在放映期间挂的全局 Esc 钩子也随之释放，避免和 PPT 全屏的 Esc 退出冲突
+  if (welcomeWindow.isOpen()) { welcomeWindow.close(); broadcast('welcome:state', { open: false }); }
+  if (castServer.running()) await stopCast();
+  // 切扩展模式是 Windows 专属能力（DisplaySwitch）；macOS 外接默认即扩展，LED 单屏模式下也无意义。
+  // 已是双屏则跳过；切换失败（投影线/HDMI 未被识别）给出明确提示，仍继续放映
+  const hasMultiDisplay = displays.listDisplays().length > 1;
+  if (!IS_MAC && hasMultiDisplay && config.get().display.forceExtendOnPresent && config.get().displayMode !== 'led') {
+    try {
+      const ext = await displays.extendMode();
+      if (!ext.ok) {
+        toast(ext.error === 'no-displayswitch'
+          ? '系统缺少 DisplaySwitch，无法自动切扩展模式'
+          : '未能识别到第二块屏（投影）：请检查投影线/HDMI 输入源，将以当前屏幕放映', 'warn');
+      }
+    } catch { }
+  }
   broadcast('ppt:state', { presenting: true, file, loading: true });
-  // 放映前让音乐淡出（通知渲染进程）
-  broadcast('music:restore', { action: 'duck' });
+  // 放映 PPT 不打断音乐：开课音乐等继续播放（播放视频仍会先暂停音乐）
   const office = await officeDetector.detect();
   const seq = ++presentSeq;
   const result = await pptController.present(file, office.progId);
@@ -241,14 +426,29 @@ async function presentPpt(file) {
   sm.mode = result.ok ? 'ppt' : 'idle';
   broadcast('ppt:state', { presenting: result.ok, file, loading: false, error: result.ok ? null : result.error });
   if (!result.ok) toast(`放映失败：${PPT_ERRORS[result.error] || result.error}`, 'error');
+  // 置顶开着时，PPT 全屏窗口弹出会把面板盖掉；分几次把面板重新压回顶层
+  if (result.ok && alwaysOnTop) {
+    [800, 2000, 4000].forEach((ms) => setTimeout(() => assertAlwaysOnTop(true), ms)); // force：关键时刻不听节流
+  }
+  // 单屏放映：弹出无边框半透明悬浮控制条（鼠标靠近右下角浮现，不抢焦点）
+  if (result.ok && screen.getAllDisplays().length === 1) floatBar.open(onHotkeyAction);
+  else floatBar.close();
+  if (result.ok) {
+    noteFlip(); // 开播即进入翻页静默期：头几百毫秒不导图，让幻灯片渲染独占主线程
+    pptServer.warmup(['thumb']); // 提前拉起 thumb 常驻进程：首轮 presenter 不再冷启动 PowerShell（GAP-07 按需策略只留给未放映场景）
+    pollPresenter(); // 开播后立刻拉一次演讲者信息（页码/胶片/备注），免等 2s 轮询
+  }
   return result;
 }
 
 async function exitPresent() {
   presentSeq++; // 使进行中的放映结果失效
+  floatBar.close(); // 收悬浮控制条
   const cfg = config.get();
   const res = await pptController.exitPresent(cfg.exitAction.closePowerpoint);
   sm.mode = 'idle';
+  pptLastPos = 0;
+  pptLastBroadcast = ''; // 清空广播签名：下次放映同一课件同一页也能正常广播
   broadcast('ppt:state', { presenting: false, file: '', loading: false });
   if (cfg.exitAction.restoreMusic) broadcast('music:restore', { action: 'restore' });
   return res;
@@ -258,24 +458,168 @@ function forwardHotkey(action) {
   broadcast('hotkey', action);
 }
 
+// 无线遥控命令（手机/电脑浏览器 → castServer → 这里），与面板/快捷键走同一套动作
+function remoteCmd({ target, cmd, page }) {
+  try {
+    if (target === 'music') {
+      // 音乐引擎在渲染层：走与全局快捷键相同的广播通道（遥控页 toggle → playPause）
+      const musicCmdMap = { toggle: 'playPause', prev: 'prev', next: 'next', volUp: 'volUp', volDown: 'volDown', mute: 'mute' };
+      // 桌面遥控端「分类播放」：复用分类 1/2 快捷键（渲染层 playCatIndex）
+      if (cmd === 'playCat') { forwardHotkey(page === 1 ? 'cat2' : 'cat1'); return; }
+      const act = musicCmdMap[cmd];
+      if (act) forwardHotkey(act);
+      return;
+    }
+    if (target === 'ppt') {
+      if (cmd === 'next' || cmd === 'prev') { onHotkeyAction(cmd === 'next' ? 'pptNext' : 'pptPrev'); return; }
+      if (cmd === 'exit') { exitPresent(); return; }
+      if (cmd === 'goto') {
+        pptController.gotoSlide(Math.floor(Number(page) || 0)).then((r) => {
+          if (r.ok) {
+            noteFlip();
+            broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total });
+            pptLastTotal = r.total;
+            pollPresenter();
+          }
+        }).catch(() => { });
+        return;
+      }
+    }
+    if (target === 'video') {
+      const ledMode = config.get().displayMode === 'led';
+      if (cmd === 'stop') {
+        if (ledMode) broadcast('video:control', 'stop');
+        videoWindow.stop();
+        sm.mode = 'idle';
+        broadcast('video:state', videoWindow.current());
+      if (config.get().exitAction.restoreMusic) broadcast('music:restore', { action: 'restore' });
+      return;
+    }
+    // 没在播时遥控端按「播放/暂停」= 续播上次的视频（遥控端没有选片列表）；
+    // 本次还没播过就退到视频库第一个，免得遥控起播静默失效
+    if (cmd === 'toggle' && !videoWindow.current().playing) {
+      // 库扫描已异步化：这里必须 await，否则拿到的是 Promise，「续播上次」会静默失效
+      library.scanVideos().then((vids) => {
+        const file = lastVideoFile || (vids[0] || {}).file || '';
+        if (file) playVideoFile(file).catch(() => { });
+      }).catch(() => { });
+      return;
+    }
+    if (['toggle', 'volUp', 'volDown'].includes(cmd)) {
+      if (ledMode) broadcast('video:control', cmd);
+      else videoWindow.control(cmd);
+    }
+    }
+  } catch { }
+}
+
 function onHotkeyAction(action) {
   if (action === 'present') { presentPpt(lastPptFile); return; }
   if (action === 'exitPresent') { exitPresent(); return; }
   if (action === 'timerToggle') { timer.togglePause(); return; }
   if (action === 'timerReset') { timer.reset(); return; }
+  // PPT 翻页：COM 直接驱动放映视图，不抢放映窗口焦点（盲操场景）
+  if (action === 'pptNext' || action === 'pptPrev') {
+    if (!pptController.getState().presenting) return;
+    const p = action === 'pptNext' ? pptController.nextSlide() : pptController.prevSlide();
+    p.then((r) => {
+      if (r.ok) {
+        noteFlip(); // 翻页静默期计时：随后 600ms 内的 presenter 轮询只读缓存不导图
+        broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total }); // 页码即时刷新
+        pptLastTotal = r.total;
+        pollPresenter(); // 胶片随后跟上（thumb 通道，不阻塞下一次翻页）
+      }
+    }).catch(() => { });
+    return;
+  }
   broadcast('hotkey', action);
 }
 
 // ---------- IPC ----------
 
+// ---------- 库缩略图：列表同步下发（缓存命中项带 thumb 路径），缺的异步生成后逐个广播补图 ----------
+// 课件：PPT 走 COM 首页缩略图；图片用自身；PDF/Word/Excel 等文档不生成（占位图标）
+function decorateThumbs(list, kind) {
+  return (list || []).map((v) => {
+    // 把库扫描时已取到的 size/mtime 透传给 thumbs，跳过对源文件的重复 statSync
+    // （原来每文件要 5 次 stat：扫描 1 次 + decorate 2 次 + requestThumbs 2 次）
+    const st = { size: v.size, mtimeMs: v.mtime };
+    if (kind === 'ppt') {
+      if (v.kind === 'img') return { ...v, thumb: v.file };
+      if (v.kind === 'doc') return { ...v, thumb: '' };
+      return { ...v, thumb: thumbs.cached('ppt', v.file, st) };
+    }
+    return { ...v, thumb: thumbs.cached(kind, v.file, st) };
+  });
+}
+function requestThumbs(list, kind) {
+  // 已经有缩略图的（decorateThumbs 刚命中缓存）不必再入队，省掉第二轮 cached() 的 stat
+  const filtered = (list || []).filter((v) => (kind !== 'ppt' || v.kind === 'ppt') && !v.thumb);
+  thumbs.requestMany(kind, filtered, (k, file, thumb) => broadcast('thumb:ready', { kind: k, file, thumb }));
+}
+
+/* 起播视频：面板点播与遥控端「播放」共用。冷门格式先转码；起播成功记住文件，
+ * 遥控端（手机/另一台电脑）在空闲时按「播放/暂停」即可续播上次的视频。 */
+async function playVideoFile(file) {
+  if (!file || !fs.existsSync(file)) {
+    toast('找不到视频文件（U 盘拔了？）', 'error');
+    return { ok: false, error: 'file-not-found' };
+  }
+  // 库里手动拖入的冷门格式（MOV/MKV/AVI 等）：播放前自动转码为 MP4
+  const ext = path.extname(file).toLowerCase();
+  if (!transcode.isVideoSafe(ext) && transcode.isVideoExt(ext)) {
+    const label = path.basename(file);
+    broadcast('import:progress', { label, pct: 0 });
+    const t = await transcode.transcode(file, config.get().videoDir, 'video', (pct) => broadcast('import:progress', { label, pct }));
+    broadcast('import:progress', null);
+    if (!t.ok) {
+      toast(`「${label}」转码失败，无法播放`, 'error');
+      return { ok: false, error: 'transcode-failed' };
+    }
+    file = t.file;
+    toast(`「${label}」已转码为 MP4，下次点播即播`, 'ok');
+  }
+  if (pptController.getState().presenting) {
+    toast('PPT 正在放映，请先退出投屏再播视频', 'warn');
+    return { ok: false, error: 'ppt-presenting' };
+  }
+  if (sm.mode === 'ppt') return { ok: false, error: 'ppt-presenting' };
+  const ledMode = config.get().displayMode === 'led';
+  if (ledMode) {
+    const r = videoWindow.playInline(file);
+    if (r.ok) {
+      sm.mode = 'video';
+      lastVideoFile = file;
+      // immediate：视频要立刻出声，音乐不等淡出尾巴，避免起播瞬间撞音（BUG-C）
+      broadcast('music:restore', { action: 'duck', immediate: true });
+      broadcast('video:load', { file });
+      broadcast('video:state', videoWindow.current());
+    }
+    return r;
+  }
+  const r = videoWindow.play(file, { windowed: !!config.get().videoWindowed });
+  if (r.ok) {
+    sm.mode = 'video';
+    lastVideoFile = file;
+    // immediate：视频要立刻出声，音乐不等淡出尾巴，避免起播瞬间撞音（BUG-C）
+      broadcast('music:restore', { action: 'duck', immediate: true });
+    broadcast('video:state', videoWindow.current());
+  }
+  return r;
+}
+
 function registerIpc() {
   ipcMain.handle('app:getInit', async () => {
     const office = await officeDetector.detect();
+    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
+    requestThumbs(videos, 'video');
+    requestThumbs(ppts, 'ppt');
     return {
       config: config.get(),
-      music: library.scanMusic(),
-      videos: library.scanVideos(),
-      ppts: library.scanPpts(),
+      music: await library.scanMusic(),
+      videos,
+      ppts,
       displays: displays.listDisplays(),
       office,
       ppt: pptController.getState(),
@@ -319,13 +663,84 @@ function registerIpc() {
     } catch { return { ok: false, error: 'bad-url' }; }
   });
 
-  ipcMain.handle('config:save', (_e, patch) => config.save(patch));
+  ipcMain.handle('config:save', (_e, patch) => {
+    const next = config.save(patch);
+    // 开机自启在保存时即时生效，无需重启（GAP-02）
+    if (patch && typeof patch.autoLaunch === 'boolean') {
+      try { app.setLoginItemSettings({ openAtLogin: patch.autoLaunch }); } catch { }
+    }
+    return next;
+  });
 
-  ipcMain.handle('library:scan', () => ({ music: library.scanMusic(), videos: library.scanVideos(), ppts: library.scanPpts() }));
+  ipcMain.handle('library:scan', async () => {
+    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
+    requestThumbs(videos, 'video');
+    requestThumbs(ppts, 'ppt');
+    return { music: await library.scanMusic(), videos, ppts };
+  });
+
+  // Windows/macOS 默认文件系统大小写不敏感：比较前统一大小写，避免「小写盘符路径」被误判
+  // 为不在库内（deleteFile 拒绝删除 / openDialog 误复制出 "(1)" 重复文件）——RD-01
+  const withinRoot = (p, root) => {
+    const a = path.resolve(String(p)).toUpperCase();
+    const b = path.resolve(String(root)).toUpperCase();
+    return a.startsWith(b + path.sep);
+  };
+
+  // 从库里删除文件（移入回收站，可找回）：允许用户库目录（视频/课件/音乐），
+  // 音乐另放行内置曲库目录（per-user 安装可写；回收站兜底，重装可恢复）
+  // 删除课件时先「释放」PowerPoint 占用：选中课件会后台只读打开预热，
+  // 文件被占用时 Windows 无法把它移进回收站（表现为「删除不了」）——RD
+  ipcMain.handle('library:deleteFile', async (_e, { kind, file }) => {
+    const cfg = config.get();
+    const roots = { video: [cfg.videoDir], ppt: [cfg.pptDir], music: [cfg.musicDir, path.join(getResourcesPath(), 'music')] };
+    const allowed = (roots[kind] || []).filter(Boolean).map((d) => path.resolve(d));
+    if (!allowed.length || !file) return { ok: false, error: 'bad-args' };
+    const target = path.resolve(String(file));
+    if (!allowed.some((rootAbs) => withinRoot(target, rootAbs))) return { ok: false, error: 'not-in-library' };
+    if (!fs.existsSync(target)) return { ok: false, error: 'not-found' };
+    // PPT：先关掉后台预热打开的演示文稿（不碰正在放映的）；非 PPT 文档未预热，无需释放
+    if (kind === 'ppt' && library.isPptExt(path.extname(target))) {
+      const rel = await pptController.runCtl('release', { path: target }, 6000).catch(() => null);
+      if (rel && rel.ok === false && rel.error === 'presenting') return { ok: false, error: 'ppt-presenting' };
+    }
+    const freshLists = async () => {
+      const videos = decorateThumbs(await library.scanVideos(), 'video');
+      const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
+      requestThumbs(videos, 'video');
+      requestThumbs(ppts, 'ppt');
+      return { music: await library.scanMusic(), videos, ppts };
+    };
+    try {
+      await shell.trashItem(target);
+      // 删成功：清掉失效的「最近使用」记录与 lastPptFile 兜底
+      if (kind === 'ppt') {
+        if (lastPptFile && path.resolve(lastPptFile).toUpperCase() === target.toUpperCase()) lastPptFile = '';
+        const next = (cfg.recentPpt || []).filter((f) => path.resolve(f).toUpperCase() !== target.toUpperCase());
+        if (next.length !== (cfg.recentPpt || []).length) config.save({ recentPpt: next });
+      }
+      return { ok: true, ...(await freshLists()) };
+    } catch (err) {
+      // PowerPoint 释放文件句柄略有延迟：再释放一次、稍等重试（仍失败才报占用）；非 PPT 文档直接报错
+      if (kind === 'ppt' && library.isPptExt(path.extname(target))) {
+        await pptController.runCtl('release', { path: target }, 6000).catch(() => null);
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          await shell.trashItem(target);
+          if (lastPptFile && path.resolve(lastPptFile).toUpperCase() === target.toUpperCase()) lastPptFile = '';
+          const next = (cfg.recentPpt || []).filter((f) => path.resolve(f).toUpperCase() !== target.toUpperCase());
+          if (next.length !== (cfg.recentPpt || []).length) config.save({ recentPpt: next });
+          return { ok: true, ...(await freshLists()) };
+        } catch (err2) { return { ok: false, error: 'busy' }; }
+      }
+      return { ok: false, error: String(err) };
+    }
+  });
 
   // 自定义音乐分类：添加（建文件夹）/ 删除（文件夹入回收站，可找回）
   const CAT_NAME_RE = /^[^\\/:*?"<>|]{1,30}$/;
-  ipcMain.handle('music:addCategory', (_e, name) => {
+  ipcMain.handle('music:addCategory', async (_e, name) => {
     name = String(name || '').trim();
     if (!CAT_NAME_RE.test(name)) return { ok: false, error: 'bad-name' };
     const dir = config.get().musicDir;
@@ -333,7 +748,7 @@ function registerIpc() {
     if (fs.existsSync(target)) return { ok: false, error: 'exists' };
     try {
       fs.mkdirSync(target, { recursive: true });
-      return { ok: true, music: library.scanMusic() };
+      return { ok: true, music: await library.scanMusic() };
     } catch (err) { return { ok: false, error: String(err) }; }
   });
   ipcMain.handle('music:removeCategory', async (_e, name) => {
@@ -344,7 +759,7 @@ function registerIpc() {
     if (!target.startsWith(dir + path.sep) || !fs.existsSync(target)) return { ok: false, error: 'not-found' };
     try {
       await shell.trashItem(target); // 移入回收站而非永久删除
-      return { ok: true, music: library.scanMusic() };
+      return { ok: true, music: await library.scanMusic() };
     } catch (err) { return { ok: false, error: String(err) }; }
   });
 
@@ -352,36 +767,46 @@ function registerIpc() {
   ipcMain.handle('music:import', async (_e, category) => {
     category = String(category || '').trim();
     if (!CAT_NAME_RE.test(category)) return { ok: false, error: 'bad-name' };
-    const AUDIO = ['.mp3', '.wav', '.m4a', '.ogg', '.flac'];
     const r = await dialog.showOpenDialog(win, {
-      title: `导入音乐到「${category}」`,
-      filters: [{ name: '音频文件', extensions: AUDIO.map((x) => x.slice(1)) }],
+      title: `导入音乐到「${category}」（支持 MP3/WMA/APE/FLAC 等全部常见格式）`,
+      filters: [{ name: '音频文件', extensions: transcode.AUDIO_ALL.map((x) => x.slice(1)) }],
       properties: ['openFile', 'multiSelections'],
     });
     if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
     const dir = path.join(config.get().musicDir, category);
     fs.mkdirSync(dir, { recursive: true });
-    let imported = 0;
+    let imported = 0, transcoded = 0, failed = 0;
     for (const src of r.filePaths) {
       const ext = path.extname(src).toLowerCase();
-      if (!AUDIO.includes(ext)) continue;
-      const base = path.basename(src);
-      const stem = base.slice(0, -ext.length);
-      let dest = path.join(dir, base);
-      let k = 1;
-      while (fs.existsSync(dest)) dest = path.join(dir, `${stem} (${k++})${ext}`);
-      try { fs.copyFileSync(src, dest); imported++; } catch { }
+      if (!transcode.isAudioExt(ext)) { failed++; continue; }
+      if (transcode.isAudioSafe(ext)) {
+        const base = path.basename(src);
+        const stem = base.slice(0, -ext.length);
+        let dest = path.join(dir, base);
+        let k = 1;
+        while (fs.existsSync(dest)) dest = path.join(dir, `${stem} (${k++})${ext}`);
+        try { fs.copyFileSync(src, dest); imported++; } catch { failed++; }
+      } else {
+        // 冷门格式（wma/ape/amr 等）：转码为 MP3 入库
+        const label = path.basename(src);
+        broadcast('import:progress', { label, pct: 0 });
+        const t = await transcode.transcode(src, dir, 'audio', (pct) => broadcast('import:progress', { label, pct }));
+        if (t.ok) { imported++; transcoded++; } else { failed++; toast(`「${label}」转码失败`, 'error'); }
+      }
     }
-    return { ok: true, imported, music: library.scanMusic() };
+    broadcast('import:progress', null);
+    return { ok: true, imported, transcoded, failed, music: await library.scanMusic() };
   });
 
   ipcMain.handle('displays:list', () => displays.listDisplays());
-  // 一键扩展模式是 Windows 能力；Mac 上外接默认扩展，直接返回成功（面板在 Mac 不展示该按钮）
-  ipcMain.handle('displays:extend', () => (IS_MAC ? { ok: true, noop: 'mac-default-extend' } : { ok: displays.extendMode() }));
+  // 一键扩展模式是 Windows 能力；Mac 上外接默认即扩展，直接返回成功（面板在 Mac 不展示该按钮）
+  ipcMain.handle('displays:extend', () => (IS_MAC ? { ok: true, noop: 'mac-default-extend' } : displays.extendMode()));
   screen.on('display-removed', () => {
     // 投影线被拔掉：视频/计时/同屏/欢迎窗口都不能再留在不存在的显示器上
     timer.closeWindow();
-    castWindow.close();
+    // 同屏原先只 close() 接收窗，服务与信标都留着（发送端还能上传、信标还在广播）。
+    // 这里走统一收尾，保证不会残留。
+    if (castServer.running()) teardownCast().catch(() => { });
     welcomeWindow.close();
     if (videoWindow.isPlaying()) {
       videoWindow.stop();
@@ -399,71 +824,187 @@ function registerIpc() {
     const r = await dialog.showOpenDialog(win, {
       title: '选择课件',
       defaultPath: config.get().pptDir || undefined,
-      filters: [{ name: '演示文稿', extensions: ['pptx', 'ppt', 'ppsx'] }],
+      filters: [
+        { name: '课件与文档', extensions: library.COURSEWARE_EXT_ARR },
+        { name: '演示文稿', extensions: ['pptx', 'ppt', 'ppsx'] },
+        { name: 'PDF', extensions: ['pdf'] },
+        { name: 'Word', extensions: ['doc', 'docx', 'rtf', 'wps'] },
+        { name: 'Excel', extensions: ['xls', 'xlsx', 'et'] },
+        { name: '图片', extensions: ['jpg', 'jpeg', 'png', 'bmp', 'gif', 'webp', 'tif', 'tiff', 'svg'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
       properties: ['openFile'],
     });
     if (r.canceled || !r.filePaths[0]) return null;
     lastPptFile = r.filePaths[0];
     library.pushRecent('ppt', lastPptFile);
-    return lastPptFile;
+    // 入库：课件不在课件文件夹时复制进去（与视频库行为一致）——课件库芯片 + 缩略图立即可见
+    let imported = false;
+    try {
+      const dir = config.get().pptDir;
+      const normDir = path.normalize(dir);
+      if (!withinRoot(lastPptFile, normDir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        let dest = path.join(dir, path.basename(lastPptFile));
+        const ext = path.extname(dest);
+        const stem = path.basename(dest, ext);
+        let k = 1;
+        while (fs.existsSync(dest)) dest = path.join(dir, `${stem} (${k++})${ext}`);
+        await fs.promises.copyFile(lastPptFile, dest);
+        imported = true;
+      }
+    } catch { }
+    const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
+    requestThumbs(ppts, 'ppt'); // 新课件异步导第 1 页缩略图，好了广播补图
+    return { file: lastPptFile, imported, ppts };
   });
   ipcMain.handle('ppt:present', (_e, file) => {
     if (file) lastPptFile = file;
     return presentPpt(lastPptFile);
   });
   ipcMain.handle('ppt:exit', () => exitPresent());
+  // 放映预热：选中课件后后台「只读无窗口」打开（ctl 通道串行，放映点击时只剩 Run）
+  ipcMain.handle('ppt:preopen', (_e, file) => {
+    if (!file || pptController.getState().presenting) return { ok: false, error: 'busy' };
+    // 非 PPT 文档（PDF/Word/图片…）不走 COM 预热，避免白拉起 PowerPoint 打不开还报错
+    if (!library.isPptExt(path.extname(file))) return { ok: true, noop: 'non-ppt' };
+    return pptController.runCtl('preopen', { path: file }, 20000, 'ctl');
+  });
+  // 全部页面缩略图：一次性导出所有页到按版本缓存的目录，目录轮询渐进广播（页面导出一张显示一张）
+  let exportAllBusy = false;
+  ipcMain.handle('ppt:exportAll', async (_e, file) => {
+    if (!file) return { ok: false, error: 'no-file' };
+    if (!library.isPptExt(path.extname(file))) return { ok: true, total: 0, cached: true }; // 非 PPT 无页面网格
+    if (pptController.getState().presenting) return { ok: false, error: 'presenting' }; // 放映中不打扰 COM
+    if (exportAllBusy) return { ok: false, error: 'busy' };
+    exportAllBusy = true;
+    try {
+      const dir = pptExportDir(file);
+      let lastCount = -1;
+      // 导出 300 页课件时，每 400ms 全量重发一次整个 pages 数组 = O(N²)（累计约 4.5 万条对象），
+// 主线程持续抖动。改成「攒够 8 页或收尾才发」：进度依然可见，IPC 量降到约 1/8。
+const PAGES_BATCH = 8;
+const pushPages = (done) => {
+        try {
+          const pages = [];
+          for (const f of fs.readdirSync(dir)) {
+            const m = /^page-(\d+)\.png$/.exec(f);
+            if (m) pages.push({ page: Number(m[1]), img: path.join(dir, f) });
+          }
+          pages.sort((a, b) => a.page - b.page);
+          if (done || lastCount === -1 || pages.length - lastCount >= PAGES_BATCH) {
+            lastCount = pages.length;
+            broadcast('ppt:pages', { file, pages, done });
+          }
+          return pages.length;
+        } catch { return lastCount; }
+      };
+      // 全部页面已缓存（meta.json 记录的总页数已齐）→ 不启动 PowerPoint，直接广播，启动零开销
+      let cachedTotal = 0;
+      try { cachedTotal = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')).total || 0; } catch { }
+      const dirCount = (() => { try { return fs.readdirSync(dir).filter((f) => /^page-\d+\.png$/.test(f)).length; } catch { return 0; } })();
+      if (cachedTotal > 0 && dirCount >= cachedTotal) {
+        pushPages(true);
+        return { ok: true, total: cachedTotal, cached: true };
+      }
+      const job = pptController.runCtl('exportall', { path: file, exportDir: dir }, 180000, 'thumb');
+      const exportPollTimer = setInterval(() => pushPages(false), 400); // 不再遮蔽 ./timer 模块（BUG-12）
+      const res = await job;
+      clearInterval(exportPollTimer);
+      if (res.ok) {
+        // 放映已开始 → 脚本主动停导（aborted）：页面没导全，不写 meta.json（下次选中会重导），
+        // 但仍广播完成帧清掉「导出中」指示（放映中面板要用页面网格跳页）
+        if (!res.aborted) {
+          try { fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ total: res.total })); } catch { }
+        }
+        pushPages(true);
+        return { ok: true, total: res.total, exported: res.exported, aborted: !!res.aborted };
+      }
+      return { ok: false, error: res.error || 'export-failed' };
+    } finally { exportAllBusy = false; }
+  });
   ipcMain.handle('ppt:status', () => pptController.syncStatus());
+  // 无线遥控：命令回调 + 状态快照（遥控页每秒轮询刷新）
+  castServer.setCommandHandler(remoteCmd);
+  castServer.setStateProvider(() => ({
+    music: { playing: !!musicMemo.playing, track: musicMemo.track || '', volume: Math.round((musicMemo.volume || 0) * 100) },
+    ppt: { presenting: pptController.getState().presenting, position: pptLastPos || 0, total: pptLastTotal || 0 },
+    video: { playing: !!videoWindow.current().playing },
+  }));
   ipcMain.handle('ppt:next', async () => {
     const r = await pptController.nextSlide();
-    if (r.ok) broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total, notes: '', nextNotes: '', curImg: '', nextImg: '' });
+    if (r.ok) {
+      noteFlip();
+      broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total }); // 页码即时刷新
+      pptLastTotal = r.total;
+      pollPresenter(); // 胶片随后跟上（thumb 通道，连续翻页不互相堵）
+    }
     return r;
   });
   ipcMain.handle('ppt:prev', async () => {
     const r = await pptController.prevSlide();
-    if (r.ok) broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total, notes: '', nextNotes: '', curImg: '', nextImg: '' });
+    if (r.ok) {
+      noteFlip();
+      broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total });
+      pptLastTotal = r.total;
+      pollPresenter();
+    }
+    return r;
+  });
+  // 演讲者条缩略图点击：跳任意页后立刻刷新 5 页胶片
+  ipcMain.handle('ppt:goto', async (_e, page) => {
+    const r = await pptController.gotoSlide(Math.floor(Number(page) || 0));
+    if (r.ok) {
+      noteFlip();
+      broadcast('ppt:presenter', { ok: true, presenting: true, position: r.position, total: r.total });
+      pptLastTotal = r.total;
+      pollPresenter();
+    }
     return r;
   });
 
+  // 添加视频到视频库：多选全格式 → 能直播的直接拷贝；MOV/MKV/AVI 等自动转码为 MP4 再入库
+  // 不直接播放；入库后点视频卡片播放。转码进度经 import:progress 广播
   ipcMain.handle('video:openDialog', async () => {
     const r = await dialog.showOpenDialog(win, {
-      title: '选择视频',
+      title: '添加视频到视频库（支持 MP4/MOV/MKV/AVI/WMV/FLV 等全部常见格式）',
       defaultPath: config.get().videoDir || undefined,
-      filters: [{ name: '视频', extensions: ['mp4', 'webm', 'm4v'] }],
-      properties: ['openFile'],
+      filters: [{ name: '视频', extensions: transcode.VIDEO_ALL.map((x) => x.slice(1)) }],
+      properties: ['openFile', 'multiSelections'],
     });
-    if (r.canceled || !r.filePaths[0]) return null;
-    library.pushRecent('video', r.filePaths[0]);
-    return r.filePaths[0];
-  });
-  ipcMain.handle('video:play', (_e, file) => {
-    if (!file || !fs.existsSync(file)) {
-      toast('找不到视频文件（U 盘拔了？）', 'error');
-      return { ok: false, error: 'file-not-found' };
-    }
-    if (pptController.getState().presenting) {
-      toast('PPT 正在放映，请先退出投屏再播视频', 'warn');
-      return { ok: false, error: 'ppt-presenting' };
-    }
-    if (sm.mode === 'ppt') return { ok: false, error: 'ppt-presenting' };
-    const ledMode = config.get().displayMode === 'led';
-    if (ledMode) {
-      const r = videoWindow.playInline(file);
-      if (r.ok) {
-        sm.mode = 'video';
-        broadcast('music:restore', { action: 'duck' });
-        broadcast('video:load', { file });
-        broadcast('video:state', videoWindow.current());
+    if (r.canceled || !r.filePaths.length) return { ok: true, canceled: true };
+    const dir = config.get().videoDir;
+    fs.mkdirSync(dir, { recursive: true });
+    let imported = 0, transcoded = 0, failed = 0;
+    for (const src of r.filePaths) {
+      const ext = path.extname(src).toLowerCase();
+      if (!transcode.isVideoExt(ext)) { failed++; continue; }
+      if (transcode.isVideoSafe(ext)) {
+        // Chromium 可直播：直接拷贝（重名加 (n)，同内容跳过）
+        const base = path.basename(src);
+        const stem = base.slice(0, -ext.length);
+        let dest = path.join(dir, base);
+        let k = 1;
+        while (fs.existsSync(dest)) {
+          try { if (fs.statSync(dest).size === fs.statSync(src).size) { dest = null; break; } } catch { }
+          dest = path.join(dir, `${stem} (${k++})${ext}`);
+        }
+        if (!dest) continue;
+        try { fs.copyFileSync(src, dest); imported++; } catch { failed++; }
+      } else {
+        // 需转码：转 MP4 入库（H.264+AAC，所有设备可播）
+        const label = path.basename(src);
+        broadcast('import:progress', { label, pct: 0 });
+        const t = await transcode.transcode(src, dir, 'video', (pct) => broadcast('import:progress', { label, pct }));
+        if (t.ok) { imported++; transcoded++; } else { failed++; toast(`「${label}」转码失败`, 'error'); }
       }
-      return r;
     }
-    const r = videoWindow.play(file);
-    if (r.ok) {
-      sm.mode = 'video';
-      broadcast('music:restore', { action: 'duck' });
-      broadcast('video:state', videoWindow.current());
-    }
-    return r;
+    broadcast('import:progress', null);
+    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    requestThumbs(videos, 'video'); // 新入库的视频异步抽首帧，好了广播 thumb:ready
+    return { ok: true, imported, transcoded, failed, videos };
   });
+  ipcMain.handle('video:play', async (_e, file) => playVideoFile(file));
   ipcMain.handle('video:stop', () => {
     const ledMode = config.get().displayMode === 'led';
     if (ledMode) broadcast('video:control', 'stop');
@@ -475,9 +1016,27 @@ function registerIpc() {
   });
   ipcMain.handle('video:control', (_e, cmd) => {
     const ledMode = config.get().displayMode === 'led';
+    // LED 模式的 stop 走的是面板内联：原来只把指令广播给渲染层，主进程这边
+    // inlineMode / sm.mode / video:state 都没更新，表现为「画面已停但面板仍显示投放中」。
+    if (ledMode && cmd === 'stop') {
+      videoWindow.stop();
+      sm.mode = 'idle';
+      broadcast('video:state', videoWindow.current());
+      if (config.get().exitAction.restoreMusic) broadcast('music:restore', { action: 'restore' });
+      return { ok: true };
+    }
     if (ledMode) broadcast('video:control', cmd);
     else videoWindow.control(cmd);
     return { ok: true };
+  });
+  // 全屏 ⇄ 窗口模式互切（面板遥控条 / 播放窗口进度条的 ⛶ 按钮）；模式记忆，下次播放沿用
+  ipcMain.handle('video:windowToggle', () => {
+    const r = videoWindow.toggleWindowMode();
+    if (r.ok) {
+      config.save({ videoWindowed: r.windowed });
+      broadcast('video:state', videoWindow.current());
+    }
+    return r;
   });
 
   let musicPersistTimer = null;
@@ -499,6 +1058,22 @@ function registerIpc() {
     return { ok: true };
   });
 
+  // 音乐播放前解析「可播放路径」：冷门格式（wma/ape/amr/ra/ac3/dts/mka…）转码为缓存的 MP3；
+  // safe 或非音频原样返回。引擎 startTrack 播放前调它，让各种格式都能播。
+  ipcMain.handle('music:playable', async (_e, file) => {
+    if (!file) return { file: '' };
+    try {
+      const r = await transcode.ensureAudioPlayable(file, (pct) => {
+        broadcast('import:progress', { label: path.basename(file), pct });
+      });
+      broadcast('import:progress', null);
+      return r;
+    } catch (e) {
+      broadcast('import:progress', null);
+      return { file, transcoded: false, error: String(e) };
+    }
+  });
+
   ipcMain.handle('hotkey:remap', (_e, { action, accelerator }) => {
     const r = hotkeys.remap(action, accelerator, onHotkeyAction);
     hotkeyConflicts = hotkeyConflicts.filter((c) => c.action !== action);
@@ -509,6 +1084,7 @@ function registerIpc() {
   ipcMain.handle('window:toggleAlwaysOnTop', () => {
     alwaysOnTop = !alwaysOnTop;
     win.setAlwaysOnTop(alwaysOnTop, 'screen-saver');
+    if (alwaysOnTop) assertAlwaysOnTop();
     return { alwaysOnTop };
   });
   ipcMain.handle('window:minimize', () => { win.minimize(); return { ok: true }; });
@@ -525,15 +1101,32 @@ function registerIpc() {
   });
 
   // ---------- 迷你模式（单屏 LED：极小控制面板） ----------
-  ipcMain.handle('window:miniMode', (_e, on) => {
+  ipcMain.handle('window:miniMode', (_e, arg) => {
+    // arg 兼容布尔；对象形态 { on, dockCorner, compact }：
+    // dockCorner=放映联动自动进入时贴右下角；compact=PPT 全屏放映时的超紧凑悬浮条（约迷你条一半）
+    const on = typeof arg === 'object' && arg !== null ? !!arg.on : !!arg;
+    const dockCorner = typeof arg === 'object' && arg !== null && !!arg.dockCorner;
+    const compact = typeof arg === 'object' && arg !== null && !!arg.compact;
     if (!win) return { ok: false };
     if (on) {
       if (!config.get().miniMode) config.save({ windowBounds: win.getBounds() }); // 先存正常尺寸
       if (win.isMaximized() || win.isFullScreen()) { win.setFullScreen(false); win.unmaximize(); } // 最大化/全屏下 setBounds 无效
-      win.setMinimumSize(460, 110);
+      win.setMinimumSize(compact ? 300 : 460, compact ? 66 : 110);
       win.setAlwaysOnTop(true, 'screen-saver'); // 置顶级拉高，保证浮在欢迎屏/视频全屏窗之上
       const mb = config.get().miniBounds;
-      if (mb && isBoundsVisible(mb)) win.setBounds(mb); else win.setSize(540, 132);
+      if (!compact && mb && isBoundsVisible(mb)) {
+        win.setBounds(mb);
+      } else {
+        const sz = compact ? { w: 300, h: 66 } : { w: 540, h: 132 };
+        if (dockCorner) {
+          // 放映联动：直接停靠右下角（自动隐藏的判定条件），不挡课件中心区域
+          win.setSize(sz.w, sz.h);
+          const d = screen.getPrimaryDisplay().workArea;
+          win.setBounds({ x: d.x + d.width - sz.w - 12, y: d.y + d.height - sz.h - 12, width: sz.w, height: sz.h });
+        } else {
+          win.setSize(sz.w, sz.h);
+        }
+      }
       // 落点已在右下角的，直接算停靠（自动隐藏判定条件）
       const b = win.getBounds();
       const d = screen.getDisplayMatching(b).workArea;
@@ -627,22 +1220,53 @@ ipcMain.handle('window:miniExpand', () => {
   });
 
   // ---------- 无线同屏 ----------
-  const stopCast = async () => {
-    try { castServer.bye(); } catch { }          // 通知发送端释放共享
-    castWindow.close();
-    castServer.stop();
-    broadcast('cast:state', { running: false });
-  };
   ipcMain.handle('cast:toggle', async () => {
     if (castServer.running()) { await stopCast(); return { ok: true, running: false }; }
+    // 投影屏互斥（此前方向不对称：playVideoFile 会拦「PPT 放映中」，开同屏却不拦）：
+    // PPT 与同屏都要独占投影屏，放任不管就是两个全屏窗叠在同一块屏上，谁盖谁全看窗口顺序。
+    if (pptController.getState().presenting || sm.mode === 'ppt') {
+      toast('PPT 正在放映，请先退出放映再开启无线同屏', 'warn');
+      return { ok: false, error: 'ppt-presenting' };
+    }
+    // 本地视频同样占着投影屏：起同屏前先收掉（含音乐恢复），否则视频与同屏画面互相覆盖
+    if (videoWindow.isPlaying()) {
+      toast('已停止本地视频投放，投影屏交给无线同屏', 'warn');
+      videoWindow.stop();
+      sm.mode = 'idle';
+      broadcast('video:state', videoWindow.current());
+      if (config.get().exitAction.restoreMusic) broadcast('music:restore', { action: 'restore' });
+    }
     const r = await castServer.start((ev) => broadcast('cast:status', { event: ev }));
-    if (!r.ok) { broadcast('cast:status', { event: 'port-busy' }); return r; }
+    if (!r.ok) { broadcast('cast:status', { event: r.error === 'aborted' ? 'stopped' : 'port-busy' }); return r; }
     const inline = config.get().displayMode === 'led'; // LED 模式在面板内联播放，不再开窗口
-    if (!inline) castWindow.open(r.port);
-    broadcast('cast:state', { running: true, url: r.url, inline });
-    return { ok: true, running: true, url: r.url, inline };
+    if (!inline) castWindow.open(r.port, r.token);
+    peer.startBeacon(r.port);                    // 被控端上线：向局域网广播可遥控信标
+    broadcast('cast:state', { running: true, url: r.url, inline, token: r.token });
+    return { ok: true, running: true, url: r.url, inline, token: r.token };
   });
   ipcMain.handle('cast:state', () => castServer.current());
+
+  // ---------- 遥控另一台电脑（控制端） ----------
+  // 设备发现走 UDP 信标（peer.js）；命令/状态走 peerClient 的 HTTP，打到被控端 castServer
+  ipcMain.handle('peer:scanStart', () => {
+    peer.startScan((peers) => broadcast('peer:list', peers));
+    broadcast('peer:list', []);
+    return { ok: true };
+  });
+  ipcMain.handle('peer:scanStop', () => {
+    peer.stopScan();
+    broadcast('peer:list', []);
+    return { ok: true };
+  });
+  ipcMain.handle('peer:connect', async (_e, { ip, port, name }) => {
+    const r = await peerClient.connect(ip, port, name);
+    if (r.ok) broadcast('peer:connected', { name: r.name, ip: r.ip, port: r.port });
+    return r;
+  });
+  ipcMain.handle('peer:disconnect', () => { peerClient.disconnect(); return { ok: true }; });
+  ipcMain.handle('peer:session', () => peerClient.current());
+  ipcMain.handle('peer:state', () => peerClient.state());
+  ipcMain.handle('peer:cmd', (_e, { target, cmd, page }) => peerClient.cmd(target, cmd, page));
 
   // ---------- 课堂计时器 ----------
   ipcMain.handle('timer:start', (_e, { mode, duration }) => { timer.start(mode || 'countdown', Number(duration) || 0); return timer.current(); });
@@ -674,6 +1298,8 @@ if (!gotLock) {
     }
     config.load();
     config.save({}); // 落盘默认配置
+    // 开机自启（GAP-02）：按配置同步系统登录项；开发态/Linux 可能不支持，失败静默
+    try { app.setLoginItemSettings({ openAtLogin: !!config.get().autoLaunch }); } catch { }
     // 重启后恢复"当前课件"，保证 Ctrl+Alt+P 一按就能放映上次课件
     lastPptFile = (config.get().recentPpt || [])[0] || '';
     videoWindow.init(() => {
@@ -682,45 +1308,40 @@ if (!gotLock) {
       if (config.get().exitAction.restoreMusic) broadcast('music:restore', { action: 'restore' });
     });
     timer.init(broadcast); // 计时器 250ms 广播依赖此句柄
+    floatBar.init(onHotkeyAction); // 悬浮条音乐按钮转发播放/暂停
     welcomeWindow.init(() => broadcast('welcome:state', { open: false })); // 用户按 Esc 关窗回调
     castWindow.init(() => {
-      // 同屏接收窗被用户 ESC/✕ 关掉：做完整收尾（通知发送端 + 停信令 + 面板状态复位）
+      // 同屏接收窗被用户 ESC/✕ 关掉：走统一收尾（bye + stop + 关窗 + 撤信标 + 状态复位）
       if (!castServer.running()) return;
-      try { castServer.bye(); } catch { }
-      try { castServer.stop(); } catch { }
-      broadcast('cast:state', { running: false });
+      teardownCast().catch(() => { });
     });
     createWindow();
     createTray();
     hotkeyConflicts = hotkeys.registerAll(onHotkeyAction);
     registerIpc();
+    if (!IS_MAC) pptServer.warmup(); // 预热常驻 PowerShell（只热 ctl 通道，thumb 按需冷启动，省 ~80MB，GAP-07）
 
-    // PPT 状态轮询：老师手动关掉放映/PowerPoint 时，面板 5 秒内自动复位
-    setInterval(async () => {
-      if (!pptController.getState().presenting) return;
-      const before = pptController.getState().presenting;
-      const s = await pptController.syncStatus();
-      if (before && !s.presenting) {
-        sm.mode = 'idle';
-        broadcast('ppt:state', { presenting: false, file: '', loading: false });
-      }
-    }, 5000);
-
-    // 演讲者视图轮询：放映中每 2 秒查页码，翻页才做缩略图导出（贵操作）
-    let lastPos = 0;
-    const exportDir = path.join(app.getPath('temp'), 'xiaotian-aigc-ppt');
-    // 缩略图导出目录必须存在，否则 PS 脚本里的 Test-Path 为假、静默跳过导出
-    try { fs.mkdirSync(exportDir, { recursive: true }); } catch { }
-    setInterval(async () => {
-      if (!pptController.getState().presenting) { lastPos = 0; return; }
-      const info = await pptController.pageInfo();
-      if (!info.ok || !info.presenting) return;
-      if (info.position !== lastPos) {
-        lastPos = info.position;
-        const full = await pptController.presenterInfo(exportDir);
-        if (full.ok && full.presenting) broadcast('ppt:presenter', full);
-      }
-    }, 2000);
+    // PPT 放映统一轮询（PERF-10 自适应退避）：一次 presenter 调用拿页码/备注/缩略图
+    // （thumb 通道，不阻塞翻页），内容有变化才广播（面板不重复重绘）；老师手动关放映时自动复位。
+    // 旧版 5s 状态 + 2s 页码两条通道各查一次 COM，现已合并为一条；本版再加退避：
+    // 翻页后 400ms 快补一轮（胶片/备注立刻跟上），静止期放宽到 4s，慢机空闲 COM 占用减半。
+    let presenterPollTimer = null;
+    const presenterPoll = async () => {
+      if (!pptController.getState().presenting) { schedulePresenterPoll(2000); return; }
+      assertAlwaysOnTop(); // 放映期间持续把置顶面板压回 PPT 全屏之上（内部 2s 节流，不追翻页频率）
+      const before = pptLastPos;
+      const full = await pollPresenter();
+      // 页码变了：遥控器/键盘翻页也算一次翻页，记入静默期（随后 600ms 内的轮询不导图）
+      if (full && full.presenting && pptLastPos !== before) noteFlip();
+      // 刚翻过页或刚补过图：400ms 内再确认一轮（胶片/备注立刻跟上）；静止期放宽到 4s，慢机空闲 COM 占用减半
+      const active = full ? (pptLastPos !== before || (full.exported || 0) > 0) : pptLastPos !== before;
+      schedulePresenterPoll(active ? 400 : 4000);
+    };
+    function schedulePresenterPoll(delayMs) {
+      clearTimeout(presenterPollTimer);
+      presenterPollTimer = setTimeout(presenterPoll, delayMs);
+    }
+    schedulePresenterPoll(2000);
 
     if (isSmoke) {
       setTimeout(() => { console.log('SMOKE_OK'); app.exit(0); }, 2500);

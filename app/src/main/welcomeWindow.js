@@ -21,17 +21,18 @@ function open(p) {
     show: false,
     title: '欢迎屏',
     webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'bridge.js'),
+      preload: path.join(__dirname, '..', 'preload', 'welcomeBridge.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false, // 欢迎屏常亮展示，禁止后台节流
     },
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'welcome.html'), {
     query: { text: p.text, sub: p.sub || '', bg: String(p.bg), style: String(p.style), font: String(p.font || 1), lpos: p.logoPos || 'tl', logo: p.logoPath || '', bgpath: p.bgpath },
   });
-  win.webContents.on('did-finish-load', () => { win.show(); win.focus(); });
+  win.webContents.on('did-finish-load', () => { if (!win || win.isDestroyed()) return; win.show(); win.focus(); });
   win.on('closed', () => { win = null; });
   return { ok: true };
 }

@@ -14,6 +14,8 @@ build/
 
 # Sensitive / secrets
 密钥/
+# 音乐暂存区：只是导入 app/resources/music/ 前的素材副本（内容重复，不入库）
+音乐/
 *.key
 *.pem
 *.p12

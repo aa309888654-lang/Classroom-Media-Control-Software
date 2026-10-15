@@ -18,7 +18,10 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <button id="btnWelcome" class="chip" title="文字欢迎屏：上 LED 大屏显示欢迎语"><span class="ico" data-ico="party" data-ico-size="13"></span> 欢迎</button>
+      <button id="btnCastTop" class="chip" title="无线投屏：同一 WiFi 下，手机/电脑打开网址即可把屏幕投到投影屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 无线投屏</button>
+      <button id="btnRemote" class="chip" title="无线遥控：同一 WiFi 下手机/电脑遥控本机；也可用本机遥控另一台电脑"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 遥控</button>
+      <button id="btnTools" class="chip on" title="显示/隐藏课堂工具（计时器）"><span class="ico" data-ico="timer" data-ico-size="13"></span> 计时</button>
+      <button id="btnWelcome" class="chip" title="文字欢迎屏：上 LED 大屏显示欢迎语"><span class="ico" data-ico="party" data-ico-size="13"></span> 欢迎LED</button>
       <button id="btnMode" class="chip" title="切换模式：控制台 ↔ LED投屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 切到LED投屏</button>
       <button id="btnMini" class="chip" title="迷你模式：极小控制面板，拖到右下角自动隐藏，鼠标靠近浮现"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 迷你</button>
       <button id="btnPin" class="chip" title="窗口置顶"><span class="ico" data-ico="pin" data-ico-size="13"></span> 置顶</button>
@@ -77,15 +80,131 @@
   </div>
 
   <main class="content" role="main">
-    <!-- ============ 音乐 ============ -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span class="ico" data-ico="music" data-ico-size="16"></span> 音乐</h2>
-        <span class="hint mono" id="hkHintMusic">快捷键 Ctrl+F6 播放/暂停 · Ctrl+F3/F7 切歌 · Ctrl+F8 静音 · Ctrl+F9/F10 音量−/＋ · Ctrl+F11/F12 切分类 · ~ 全屏 · Esc 退出全屏 · 长按卡片排序 · ☆置顶 · ⤒导入</span>
-        <button id="btnAddMode" class="chip chip-mini" title="显示/收起各分类的添加音乐按钮"><span class="ico" data-ico="plus" data-ico-size="12"></span> 添加音乐</button>
+    <!-- ============ 投屏 ============ -->
+    <section class="panel" data-panel="cast">
+      <div class="panel-head" title="长按拖动可调整板块顺序">
+        <h2><span class="ico" data-ico="presentation" data-ico-size="16"></span> 投屏</h2>
+        <span class="hint mono" id="hkHintPpt">PPT 放映在投影屏全屏 · Ctrl+F1 放映 · Ctrl+F2 退出 · 放映时 ↑/↓ 翻页 · 课件库长按拖动排序</span>
       </div>
 
-      <div id="catCards" class="cat-cards" aria-label="音乐分类"></div>
+      <div class="grid-2">
+        <div class="card ppt-card">
+          <div class="card-label">当前课件</div>
+          <div class="ppt-current">
+            <img id="pptCurThumb" class="ppt-cur-thumb" alt="" hidden />
+            <div class="card-value" id="pptFile">未选择</div>
+          </div>
+          <div class="card-row">
+            <button id="btnPickPpt" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 选择课件</button>
+            <div class="recents" id="pptRecents"></div>
+          </div>
+          <div class="ppt-chips" id="pptChips"></div>
+          <div class="card-row" id="pptFlipRow" style="display:none">
+            <button class="btn btn-sm" id="btnPptPrev"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 上一页</button>
+            <span class="mono" id="pptPageInfo" style="font-size:11px;color:var(--text-dim);flex:1;text-align:center">—</span>
+            <button class="btn btn-sm" id="btnPptNext"><span class="ico" data-ico="forward" data-ico-size="13"></span> 下一页</button>
+          </div>
+          <div class="presenter-strip" id="presenterStrip" style="display:none">
+            <div class="ppt-film" id="pptFilm"></div>
+            <div class="presenter-notes">
+              <div class="card-label">当前页备注</div>
+              <div class="notes-text" id="pptNotes">—</div>
+              <div class="card-label" style="margin-top:6px">下一页备注</div>
+              <div class="notes-text dim" id="pptNextNotes">—</div>
+            </div>
+          </div>
+          <div class="card-actions">
+            <button id="btnPresent" class="btn btn-primary btn-lg"><span class="ico" data-ico="play" data-ico-size="15"></span> 一键放映 PPT</button>
+            <button id="btnExitPresent" class="btn btn-danger btn-lg" disabled hidden><span class="ico" data-ico="x" data-ico-size="13"></span> 退出投屏</button>
+          </div>
+        </div>
+
+        <div class="card tools-card" id="toolsCard">
+          <div class="card-label" style="margin:0">⏱ 课堂工具 <span class="hint mono" id="hkHintTimer">计时 Alt+F7 启停 · Alt+F8 重置</span></div>
+          <div class="chip-row" id="tmModes" style="margin-top:9px">
+            <span class="chip on" data-mode="countdown">倒计时</span>
+            <span class="chip" data-mode="countup">正计时</span>
+            <span class="chip" data-mode="stopwatch">秒表</span>
+          </div>
+          <div class="tm-time mono" id="tmDisplay">00:00</div>
+          <div class="card-row" id="tmPresets">
+            <button class="btn btn-sm" data-min="1">1分</button>
+            <button class="btn btn-sm" data-min="5">5分</button>
+            <button class="btn btn-sm" data-min="10">10分</button>
+            <button class="btn btn-sm" data-min="15">15分</button>
+            <input id="tmCustom" class="tm-input mono" placeholder="分:秒" title="自定义时长，如 2:30" />
+            <button class="btn btn-sm" id="tmSetCustom">设定</button>
+          </div>
+          <div class="card-actions">
+            <button id="tmToggle" class="btn btn-primary btn-sm" style="min-width:86px"><span class="ico" data-ico="play" data-ico-size="13"></span> 开始</button>
+            <button id="tmReset" class="btn btn-sm" title="重置"><span class="ico" data-ico="reset" data-ico-size="14"></span></button>
+            <button id="tmShow" class="btn btn-sm" title="投影屏显示/隐藏计时窗口"><span class="ico" data-ico="monitor" data-ico-size="14"></span></button>
+          </div>
+          <div class="card-label" style="margin-top:14px">屏幕助手</div>
+          <div class="card-value dim" id="dispInfo">检测显示器中…</div>
+          <div class="card-row" id="extendRow">
+            <button id="btnExtend" class="btn btn-sm">🖥 一键扩展模式</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 音视频行：视频与音乐并列（窄窗口自动堆叠），整行可拖动排序 ============ -->
+    <div class="media-row">
+      <!-- ============ 视频 ============ -->
+      <section class="panel" data-panel="video">
+      <div class="panel-head" title="长按拖动可调整板块顺序">
+        <h2><span class="ico" data-ico="film" data-ico-size="16"></span> 视频</h2>
+        <span class="hint mono">视频投到投影屏全屏 · 面板遥控 · 长按拖动排序</span>
+      </div>
+      <div class="card">
+        <div class="video-chips" id="videoChips"></div>
+<div class="card-row video-remote" id="videoRemote" style="display:none">
+          <button class="btn btn-sm" id="btnVBack" title="后退10秒"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 10s</button>
+          <button class="btn btn-sm" id="btnVToggle"><span class="ico" data-ico="play" data-ico-size="13"></span> 暂停/继续</button>
+          <button class="btn btn-sm" id="btnVFwd"><span class="ico" data-ico="forward" data-ico-size="13"></span> 10s</button>
+          <button class="btn btn-sm" id="btnVVolDown"><span class="ico" data-ico="volume-x" data-ico-size="13"></span> 音量−</button>
+          <button class="btn btn-sm" id="btnVVolUp"><span class="ico" data-ico="volume-2" data-ico-size="13"></span> 音量+</button>
+          <button class="btn btn-sm" id="btnVWin" title="视频窗口在全屏与窗口模式间切换（窗口模式可拖动/缩放，带进度条）"><span class="ico" data-ico="fullscreen" data-ico-size="13"></span> <span id="btnVWinText">切为窗口</span></button>
+        </div>
+        <div class="card-actions">
+          <button id="btnPickVideo" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 添加视频</button>
+          <button id="btnStopVideo" class="btn btn-danger" disabled><span class="ico" data-ico="stop" data-ico-size="13"></span> 停止视频</button>
+          <span class="hint" id="videoHint"></span>
+        </div>
+      </div>
+    </section>
+
+        <div class="media-splitter" id="mediaSplit" title="拖动调整视频/音乐大小"></div>
+        <!-- ============ 音乐（播放器布局：左侧分类歌单 + 右侧曲目列表 + 底部播放条） ============ -->
+    <section class="panel" data-panel="music">
+      <div class="panel-head" title="长按拖动可调整板块顺序">
+        <h2><span class="ico" data-ico="music" data-ico-size="16"></span> 音乐</h2>
+        <span class="hint mono" id="hkHintMusic">快捷键 空格/Ctrl+F6 播放/暂停 · Ctrl+F3/F7 切歌 · F4 静音 · F5/F6 音量−/＋ · Ctrl+F11/F12 切分类 · ~ 全屏 · Esc 退出全屏 · 拖动行排序 · ☆置顶 · ⤒导入</span>
+        <button id="btnAddMode" class="chip chip-mini" title="管理模式：删除曲目/分类、添加音乐、拖动排序"><span class="ico" data-ico="settings" data-ico-size="12"></span> 管理音乐</button>
+      </div>
+
+      <div class="player-layout">
+        <aside class="pl-side" title="拖动分类行调整顺序，排在前面的优先显示；−/＋ 调整显示的分类数量">
+          <div class="pl-side-head">
+            <span class="card-label">分类歌单</span>
+            <span class="pl-side-ops">
+              <button id="btnCatShowMinus" class="icon-btn small" title="少显示一个分类">−</button>
+              <span class="cat-show-val mono" id="catShowVal">3/3</span>
+              <button id="btnCatShowPlus" class="icon-btn small" title="多显示一个分类（加到全部为止）">＋</button>
+            </span>
+          </div>
+          <div class="cat-list" id="catList" aria-label="音乐分类歌单"></div>
+        </aside>
+        <div class="pl-main">
+          <div class="pl-track-head">
+            <div class="pl-track-title" id="selCatName">未选择分类</div>
+            <span class="hint mono" id="selCatCount"></span>
+            <button id="btnPlayCat" class="btn btn-sm btn-primary" title="从第一首开始播放该分类（再次点暂停）"><span class="ico" data-ico="play" data-ico-size="13"></span> 播放全部</button>
+          </div>
+          <div class="track-list" id="catCards" aria-label="曲目列表"></div>
+        </div>
+      </div>
 
       <div class="now-playing">
         <div class="np-meta">
@@ -100,131 +219,23 @@
           <button id="btnPlay" class="icon-btn primary" data-hk="playPause" title="播放/暂停 (Ctrl+F6)"><span class="ico" data-ico="play" data-ico-size="18"></span></button>
           <button id="btnNext" class="icon-btn" data-hk="next" title="下一首 (Ctrl+F7)"><span class="ico" data-ico="next" data-ico-size="16"></span></button>
           <div class="vol-wrap">
-            <span class="mono vol-icon"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></span>
+            <button id="btnMute" class="icon-btn" title="静音 / 取消静音 (F4)"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></button>
             <input id="vol" type="range" min="0" max="100" value="70" />
             <span id="volVal" class="mono vol-val">70%</span>
           </div>
-          <button id="btnLoop" class="chip" title="循环模式">循环：列表</button>
+          <button id="btnLoop" class="chip" title="循环模式（点击展开选择）">循环：列表 ▾</button>
         </div>
         <div class="np-bottom">
-          <div class="np-progress" id="npProgress" style="display:none" title="点击跳转播放进度">
+          <div class="np-progress" id="npProgress" style="display:none" title="点击或按住拖动跳转播放进度">
             <div class="np-progress-fill" id="npFill"></div>
+            <div class="np-knob" id="npKnob"></div>
           </div>
           <span class="np-time mono" id="npTime" style="display:none">0:00 / 0:00</span>
         </div>
       </div>
     </section>
-
-    <!-- ============ 投屏 ============ -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span class="ico" data-ico="presentation" data-ico-size="16"></span> 投屏</h2>
-        <span class="hint mono" id="hkHintPpt">PPT 放映在投影屏全屏 · Ctrl+F1 放映 · Ctrl+F2 退出 · 课件库长按拖动排序</span>
-      </div>
-
-      <div class="grid-2">
-        <div class="card ppt-card">
-          <div class="card-label">当前课件</div>
-          <div class="card-value" id="pptFile">未选择</div>
-          <div class="card-row">
-            <button id="btnPickPpt" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 选择课件</button>
-            <div class="recents" id="pptRecents"></div>
-          </div>
-          <div class="ppt-chips" id="pptChips"></div>
-          <div class="card-row" id="pptFlipRow" style="display:none">
-            <button class="btn btn-sm" id="btnPptPrev"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 上一页</button>
-            <span class="mono" id="pptPageInfo" style="font-size:11px;color:var(--text-dim);flex:1;text-align:center">—</span>
-            <button class="btn btn-sm" id="btnPptNext"><span class="ico" data-ico="forward" data-ico-size="13"></span> 下一页</button>
-          </div>
-          <div class="presenter-strip" id="presenterStrip" style="display:none">
-            <img id="pptCurImg" class="ppt-thumb" alt="当前页" />
-            <div class="presenter-notes">
-              <div class="card-label">当前页备注</div>
-              <div class="notes-text" id="pptNotes">—</div>
-              <div class="card-label" style="margin-top:6px">下一页备注</div>
-              <div class="notes-text dim" id="pptNextNotes">—</div>
-            </div>
-            <img id="pptNextImg" class="ppt-thumb" alt="下一页" />
-          </div>
-          <div class="card-actions">
-            <button id="btnPresent" class="btn btn-primary btn-lg"><span class="ico" data-ico="play" data-ico-size="15"></span> 一键放映 PPT</button>
-            <button id="btnExitPresent" class="btn btn-danger btn-lg" disabled><span class="ico" data-ico="x" data-ico-size="13"></span> 退出投屏</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-label">无线同屏</div>
-          <div class="card-value dim">同一 WiFi 下，手机/电脑浏览器扫码打开网址：安卓/电脑可实时镜像投屏（首次需在加密页点「继续前往」）；苹果手机用页面上「上传上屏」传照片/视频</div>
-          <div class="card-row">
-            <button id="btnCast" class="btn btn-primary">📶 开启同屏</button>
-            <span class="badge" id="castBadge">未开启</span>
-          </div>
-          <div class="cast-info" id="castInfo" style="display:none">
-            <canvas id="castQr" width="156" height="156"></canvas>
-            <div class="cast-url-box mono" id="castUrl">—</div>
-            <div class="form-tip">手机打不开网址：允许 Windows 防火墙放行本软件；仍不通则路由器开了「AP 隔离」，需关闭。苹果手机请用发送页的「上传上屏」</div>
-          </div>
-          <div class="card-label" style="margin-top:14px">屏幕助手</div>
-          <div class="card-value dim" id="dispInfo">检测显示器中…</div>
-          <div class="card-row" id="extendRow">
-            <button id="btnExtend" class="btn btn-sm">🖥 一键扩展模式</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 视频 ============ -->
-    <section class="panel">
-      <div class="panel-head">
-        <h2><span class="ico" data-ico="film" data-ico-size="16"></span> 视频</h2>
-        <span class="hint mono">视频投到投影屏全屏 · 面板遥控 · 长按拖动排序</span>
-      </div>
-      <div class="card">
-        <div class="video-chips" id="videoChips"></div>
-        <div class="card-row video-remote" id="videoRemote" style="display:none">
-          <button class="btn btn-sm" id="btnVBack" title="后退10秒"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 10s</button>
-          <button class="btn btn-sm" id="btnVToggle"><span class="ico" data-ico="play" data-ico-size="13"></span> 暂停/继续</button>
-          <button class="btn btn-sm" id="btnVFwd" title="前进10秒"><span class="ico" data-ico="forward" data-ico-size="13"></span> 10s</button>
-          <button class="btn btn-sm" id="btnVVolDown"><span class="ico" data-ico="volume-x" data-ico-size="13"></span> 音量−</button>
-          <button class="btn btn-sm" id="btnVVolUp"><span class="ico" data-ico="volume-2" data-ico-size="13"></span> 音量+</button>
-        </div>
-        <div class="card-actions">
-          <button id="btnPickVideo" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 选择视频</button>
-          <button id="btnStopVideo" class="btn btn-danger" disabled><span class="ico" data-ico="stop" data-ico-size="13"></span> 停止视频</button>
-          <span class="hint" id="videoHint"></span>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 课堂工具 ============ -->
-    <section class="panel" aria-label="课堂工具">
-      <div class="panel-head">
-        <h2><span class="ico" data-ico="timer" data-ico-size="16"></span> 课堂工具</h2>
-        <span class="hint mono" id="hkHintTimer">计时 Alt+F7 启停 · Alt+F8 重置</span>
-      </div>
-      <div class="card tm-bar">
-        <span class="card-label" style="margin:0">⏱ 计时器</span>
-        <div class="chip-row" id="tmModes">
-          <span class="chip on" data-mode="countdown">倒计时</span>
-          <span class="chip" data-mode="countup">正计时</span>
-          <span class="chip" data-mode="stopwatch">秒表</span>
-        </div>
-        <div class="tm-time mono" id="tmDisplay">00:00</div>
-        <div class="card-row" id="tmPresets" style="margin:0">
-          <button class="btn btn-sm" data-min="1">1分</button>
-          <button class="btn btn-sm" data-min="5">5分</button>
-          <button class="btn btn-sm" data-min="10">10分</button>
-          <button class="btn btn-sm" data-min="15">15分</button>
-          <input id="tmCustom" class="tm-input mono" placeholder="分:秒" title="自定义时长，如 2:30" />
-          <button class="btn btn-sm" id="tmSetCustom">设定</button>
-        </div>
-        <div class="card-actions" style="margin:0">
-          <button id="tmToggle" class="btn btn-primary btn-sm" style="min-width:86px"><span class="ico" data-ico="play" data-ico-size="13"></span> 开始</button>
-          <button id="tmReset" class="btn btn-sm" title="重置"><span class="ico" data-ico="reset" data-ico-size="14"></span></button>
-          <button id="tmShow" class="btn btn-sm" title="投影屏显示/隐藏计时窗口"><span class="ico" data-ico="monitor" data-ico-size="14"></span></button>
-        </div>
-      </div>
-    </section>
+    </div>
+    <!-- ============ /音视频行 ============ -->
   </main>
 
   <footer class="statusbar mono" role="contentinfo">
@@ -262,7 +273,7 @@
           <label>课件文件夹</label>
           <div class="form-ctrl"><span class="path mono" id="setPptDir"></span>
             <button id="btnPickPptDir" class="btn btn-sm">选择</button></div>
-          <p class="form-tip">放入 PPT/PPTX 即进课件库，投屏页点选即放映；长按拖动可排序</p>
+          <p class="form-tip">放入 PPT/PDF/Word/Excel/图片 即进课件库；PPT 一键放映带翻页控制，其它文档用默认程序打开投屏；长按拖动可排序</p>
         </div>
         <div class="form-row">
           <label>迷你模式</label>
@@ -304,6 +315,21 @@
             </select>
             <span class="form-tip">双屏选控制台；单屏直连LED选投屏</span>
           </div>
+        </div>
+        <div class="form-row">
+          <label>兼容模式</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setCompat" /><i></i></label>
+            <span class="form-tip">老旧电脑界面花屏/文字乱码时开启（禁用显卡加速，<strong>重启软件后生效</strong>）</span></div>
+        </div>
+        <div class="form-row">
+          <label>开机自启</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setAutoLaunch" /><i></i></label>
+            <span class="form-tip">开机自动进入课堂中控（教室一体机免手动双击）</span></div>
+        </div>
+        <div class="form-row">
+          <label>自动信任投屏证书</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setCastTrustCert" checked /><i></i></label>
+            <span class="form-tip">HTTPS 镜像页免「证书不受信任」警告（写入 Windows 当前用户根证书存储；关闭后首次投屏按页面提示手动允许即可）</span></div>
         </div>
         <div class="form-row">
           <label>退出投屏后</label>
@@ -390,6 +416,103 @@
               <button id="btnWelcomeOpen" class="btn btn-primary btn-lg"><span class="ico" data-ico="cast" data-ico-size="14"></span> 开屏（上 LED）</button>
               <button id="btnWelcomeClose" class="btn btn-danger" disabled><span class="ico" data-ico="x" data-ico-size="12"></span> 关屏</button>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 无线遥控弹窗（顶栏「遥控」按钮打开；与无线投屏共用同一服务） -->
+  <div class="overlay" id="remoteOverlay" hidden>
+    <div class="modal" style="width:560px">
+      <div class="modal-head">
+        <h3><span class="ico" data-ico="monitor" data-ico-size="16"></span> 无线遥控</h3>
+        <button id="btnCloseRemote" class="icon-btn small"><span class="ico" data-ico="x" data-ico-size="13"></span></button>
+      </div>
+      <div class="modal-body">
+        <div class="dim" style="font-size:12.5px;line-height:1.95;white-space:normal">同一 WiFi 下，手机或电脑浏览器扫码（或输入网址）打开遥控页：<br>
+        <b>• 音乐：</b>播放 / 暂停、上一首 / 下一首、音量、静音<br>
+        <b>• PPT：</b>上一页 / 下一页、退出放映（放映中）<br>
+        <b>• 视频：</b>播放 / 暂停、停止、音量</div>
+        <div class="card-row">
+          <button id="btnRemoteToggle" class="btn btn-primary">📶 开启遥控服务</button>
+          <span class="badge idle" id="remoteBadge">未开启</span>
+        </div>
+        <div class="cast-info" id="remoteInfo" style="display:none">
+          <canvas id="remoteQr" width="156" height="156"></canvas>
+          <div>
+            <div class="cast-url-box mono" id="remoteUrl">—</div>
+            <p class="form-tip">手机/电脑浏览器打开此网址即可遥控（与无线投屏共用同一服务；网址结尾是 /remote）</p>
+          </div>
+        </div>
+        <div class="peer-sep"></div>
+        <div class="card-label" style="margin-top:12px">遥控另一台电脑 <span class="hint">被控电脑需与本机同一 WiFi，且已开启上面的遥控服务</span></div>
+        <div class="peer-list" id="peerList"><div class="dim" id="peerEmpty">正在扫描局域网…</div></div>
+        <div class="card-row" style="margin-top:8px">
+          <input id="peerIp" class="tm-input mono" placeholder="或手动输入被控电脑 IP，如 192.168.1.5" title="被控电脑的局域网 IP（在它自己的遥控弹窗里可见）" />
+          <button id="btnPeerConnectManual" class="btn btn-sm">连接</button>
+        </div>
+        <div id="peerPanel" hidden>
+          <div class="card-row">
+            <span class="badge" id="peerBadge">已连接</span>
+            <span class="dim mono" id="peerName" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span>
+            <button id="btnPeerDisconnect" class="btn btn-sm">断开</button>
+          </div>
+          <div class="peer-status mono" id="peerStatus">—</div>
+          <div class="card-label">🎵 音乐</div>
+          <div class="card-row">
+            <button class="btn btn-sm" data-peer="music" data-cmd="prev"><span class="ico" data-ico="rewind" data-ico-size="12"></span> 上一首</button>
+            <button class="btn btn-sm btn-primary" data-peer="music" data-cmd="toggle"><span class="ico" data-ico="play" data-ico-size="12"></span> 播放 / 暂停</button>
+            <button class="btn btn-sm" data-peer="music" data-cmd="next"><span class="ico" data-ico="forward" data-ico-size="12"></span> 下一首</button>
+          </div>
+          <div class="card-row">
+            <button class="btn btn-sm" data-peer="music" data-cmd="mute"><span class="ico" data-ico="volume-x" data-ico-size="12"></span> 静音</button>
+            <button class="btn btn-sm" data-peer="music" data-cmd="volDown"><span class="ico" data-ico="volume-2" data-ico-size="12"></span> 音量−</button>
+            <button class="btn btn-sm" data-peer="music" data-cmd="volUp"><span class="ico" data-ico="volume-2" data-ico-size="12"></span> 音量＋</button>
+          </div>
+          <div class="card-row">
+            <button class="btn btn-sm" data-peer="music" data-cmd="playCat" data-page="0">分类 1 播放</button>
+            <button class="btn btn-sm" data-peer="music" data-cmd="playCat" data-page="1">分类 2 播放</button>
+          </div>
+          <div class="card-label">📽 PPT</div>
+          <div class="card-row">
+            <button class="btn btn-sm" data-peer="ppt" data-cmd="prev"><span class="ico" data-ico="rewind" data-ico-size="12"></span> 上一页</button>
+            <button class="btn btn-sm btn-primary" data-peer="ppt" data-cmd="next"><span class="ico" data-ico="forward" data-ico-size="12"></span> 下一页</button>
+            <button class="btn btn-sm btn-danger" data-peer="ppt" data-cmd="exit"><span class="ico" data-ico="x" data-ico-size="12"></span> 退出放映</button>
+          </div>
+          <div class="card-label">🎬 视频</div>
+          <div class="card-row">
+            <button class="btn btn-sm btn-primary" data-peer="video" data-cmd="toggle"><span class="ico" data-ico="play" data-ico-size="12"></span> 播放 / 暂停</button>
+            <button class="btn btn-sm btn-danger" data-peer="video" data-cmd="stop"><span class="ico" data-ico="stop" data-ico-size="12"></span> 停止</button>
+            <button class="btn btn-sm" data-peer="video" data-cmd="volUp"><span class="ico" data-ico="volume-2" data-ico-size="12"></span> 音量＋</button>
+            <button class="btn btn-sm" data-peer="video" data-cmd="volDown"><span class="ico" data-ico="volume-2" data-ico-size="12"></span> 音量−</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 无线投屏弹窗（顶栏「无线投屏」按钮打开） -->
+  <div class="overlay" id="castOverlay" hidden>
+    <div class="modal" style="width:500px">
+      <div class="modal-head">
+        <h3><span class="ico" data-ico="cast" data-ico-size="16"></span> 无线投屏</h3>
+        <button id="btnCloseCast" class="icon-btn small"><span class="ico" data-ico="x" data-ico-size="13"></span></button>
+      </div>
+      <div class="modal-body">
+        <div class="dim" style="font-size:12.5px;line-height:1.95;white-space:normal">同一 WiFi 下，用手机或电脑浏览器扫码（或输入网址）打开投屏页：<br>
+      <b>• 手机（安卓）：</b>点「开始共享屏幕」，整屏实时镜像<br>
+      <b>• 电脑：</b>用 Chrome / Edge 打开，点「开始共享屏幕」投整个电脑画面<br>
+      <b>• 苹果手机：</b>用「上传上屏」传照片/视频（首次进加密页点「继续前往」）</div>
+        <div class="card-row">
+          <button id="btnCast" class="btn btn-primary">📶 开启无线投屏</button>
+          <span class="badge idle" id="castBadge">未开启</span>
+        </div>
+        <div class="cast-info" id="castInfo" style="display:none">
+          <canvas id="castQr" width="156" height="156"></canvas>
+          <div>
+            <div class="cast-url-box mono" id="castUrl">—</div>
+            <p class="form-tip">手机打不开网址：允许 Windows 防火墙放行本软件；仍不通则路由器开了「AP 隔离」，需关闭。苹果手机请用发送页的「上传上屏」</p>
           </div>
         </div>
       </div>

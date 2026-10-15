@@ -43,7 +43,9 @@
   </button>
   <script src="assets/castReceiver.js"></script>
   <script>
-    const port = new URLSearchParams(location.search).get('port') || '18333';
+    const qs = new URLSearchParams(location.search);
+    const port = qs.get('port') || '18333';
+    const token = qs.get('token') || ''; // 信令服务访问令牌（file:// 页面无 Cookie，用 X-Token / URL 签名）
     const waitEl = document.getElementById('wait');
     // 上传上屏层：收到 upload 消息后按类型展示（图片直出，视频起播）
     const upMedia = document.getElementById('upMedia');
@@ -52,7 +54,7 @@
     const upBadge = document.getElementById('upBadge');
     const upName = document.getElementById('upName');
     function showUpload(m) {
-      const src = 'http://127.0.0.1:' + port + '/media/' + encodeURIComponent(m.id);
+      const src = 'http://127.0.0.1:' + port + '/media/' + encodeURIComponent(m.id) + '?k=' + encodeURIComponent(token);
       upName.textContent = m.name || '未命名';
       if ((m.mime || '').startsWith('video/')) {
         upImg.style.display = 'none';
@@ -70,6 +72,7 @@
     }
     window.CastReceiver.start({
       port: Number(port),
+      token,
       video: document.getElementById('v'),
       onUpload: showUpload,
       onState: (s) => {

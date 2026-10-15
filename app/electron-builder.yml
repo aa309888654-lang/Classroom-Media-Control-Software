@@ -6,15 +6,27 @@ directories:
 files:
   - src/**/*
   - package.json
+  # GAP-08：排除 .mimosa 缓存目录（上传快照等临时产物），不随包分发
+  - "!src/**/.mimosa/**"
+# ffmpeg 二进制必须解出 asar（asar 内的文件无法 spawn 执行）；转码全格式兼容依赖它
+asarUnpack:
+  - node_modules/ffmpeg-static/**
 extraResources:
   - from: resources
     to: resources
+    filter:
+      - "**/*"
+      - "!**/.mimosa/**"   # GAP-08：resources 下同样剔除 .mimosa 缓存
 win:
   icon: resources/icon.png
   target:
     - target: nsis
       arch: [x64]
     - target: portable
+      arch: [x64]
+    # 绿色解压版：解压一次到电脑/U盘，之后双击 小天AIGC.exe 秒开（~1.3 秒）。
+    # 低性能教室机推荐用此版或安装版——便携版每次启动都要自解压 ~500MB，慢机要等 1 分钟
+    - target: zip
       arch: [x64]
 nsis:
   oneClick: false

@@ -3,6 +3,7 @@
 window.CastReceiver = (() => {
   let pc = null;
   let port = 0;
+  let token = ''; // 信令服务访问令牌（file:// 页面拿不到 Cookie，用 X-Token 头）
   let video = null;
   let running = false;
   const pendingIce = [];
@@ -10,14 +11,17 @@ window.CastReceiver = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function api(path, body) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['X-Token'] = token;
     const r = await fetch(`http://127.0.0.1:${port}${path}`, body
-      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      ? { method: 'POST', headers, body: JSON.stringify(body) }
       : undefined);
     return r.json();
   }
 
   async function start(opts) {
     port = Number(opts.port);
+    token = String(opts.token || '');
     video = opts.video;
     running = true;
     const onState = opts.onState || (() => {});
@@ -30,6 +34,10 @@ window.CastReceiver = (() => {
       }
     };
     pc.ontrack = (e) => {
+      // 接收端一律静音（BUG-B）：与控制台模式 caster.html 的 `muted autoplay` 对齐。
+      // 发送端 getDisplayMedia 本就是 audio:false（castServer.js），但两条接收路径
+      // 静音策略必须一致，否则 LED 内联投屏会与本机音乐叠声。
+      video.muted = true;
       video.srcObject = e.streams[0];
       video.hidden = false;
       video.play().catch(() => { });

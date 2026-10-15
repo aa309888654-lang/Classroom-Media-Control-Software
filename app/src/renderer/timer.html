@@ -83,7 +83,8 @@
       if (s.finished) { timeEl.textContent = '00:00'; timeEl.className = 'done'; subEl.textContent = '时间到！'; return; }
       const ms = s.mode === 'countdown' ? s.remaining : s.elapsed;
       timeEl.textContent = fmt(ms);
-      timeEl.className = s.running ? '' : 'warn';
+      // BUG-11：与主面板对齐——倒计时最后 10 秒亮红（danger），暂停亮橙（warn），其余正常
+      timeEl.className = (s.mode === 'countdown' && s.running && s.remaining <= 10000) ? 'danger' : (s.running ? '' : 'warn');
       subEl.textContent = s.mode === 'countdown' ? '倒计时' : s.mode === 'countup' ? '正计时' : '秒表';
     }
     window.api.on('timer:tick', render);

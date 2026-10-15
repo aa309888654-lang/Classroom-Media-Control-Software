@@ -97,15 +97,21 @@ function showWindow() {
     backgroundColor: '#161616', show: false,
     title: '小天AIGC · 计时器',
     webPreferences: {
-      preload: path.join(__dirname, '..', 'preload', 'bridge.js'),
+      preload: path.join(__dirname, '..', 'preload', 'timerBridge.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
+      backgroundThrottling: false, // 计时窗口禁止后台节流（投影屏上失焦也要准时刷新）
     },
   });
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'timer.html'));
   win.webContents.on('did-finish-load', () => {
+    if (!win || win.isDestroyed()) return; // GAP-05：加载完成前窗口可能已被关闭
     win.webContents.send('timer:tick', snapshot());
     win.showInactive();
+  });
+  // Esc 主进程兜底：窗口有焦点时（页面脚本异常也有效）退出全屏或关窗
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && input.key === 'Escape' && !input.isAutoRepeat) escExit();
   });
   win.on('closed', () => { win = null; });
 }
@@ -120,6 +126,14 @@ function toggleFullscreen() {
   if (win && !win.isDestroyed()) win.setFullScreen(!win.isFullScreen());
 }
 
+// ESC / ✕ 的统一退出：全屏时先退出全屏，窗口化时直接关窗
+function escExit() {
+  if (win && !win.isDestroyed()) {
+    if (win.isFullScreen()) win.setFullScreen(false);
+    else closeWindow();
+  }
+}
+
 function closeWindow() {
   if (win && !win.isDestroyed()) win.close();
   win = null;
@@ -131,14 +145,7 @@ function current() {
 
 function init(bc) {
   broadcast = bc;
-  // ESC / 左上角 ✕ 的统一退出：全屏时先退出全屏，窗口化时直接关窗
-  ipcMain.handle('timer:escExit', () => {
-    if (win && !win.isDestroyed()) {
-      if (win.isFullScreen()) win.setFullScreen(false);
-      else closeWindow();
-    }
-    return { ok: true };
-  });
+  ipcMain.handle('timer:escExit', () => { escExit(); return { ok: true }; });
 }
 
 module.exports = { start, togglePause, reset, toggleShow, toggleFullscreen, closeWindow, current, init };

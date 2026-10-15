@@ -26,7 +26,7 @@ function unhookEscape() {
   escHooked = false;
 }
 
-function open(port) {
+function open(port, token) {
   close();
   const d = projectionDisplay();
   win = new BrowserWindow({
@@ -45,12 +45,20 @@ function open(port) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false, // 同屏画面实时渲染，禁止后台节流
     },
   });
   win.setMenuBarVisibility(false);
-  win.loadFile(path.join(__dirname, '..', 'renderer', 'caster.html'), { query: { port: String(port) } });
+  // token 放进 query：接收端是 file:// 页面，拿不到 Cookie，只能用 X-Token / URL 签名访问信令与媒体
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'caster.html'), {
+    query: { port: String(port), token: String(token || '') },
+  });
   // show()+focus()：窗口必须拿焦点，ESC/键盘事件才进得来（showInactive 会导致快捷键全失灵）
-  win.webContents.on('did-finish-load', () => { win.show(); win.focus(); });
+  win.webContents.on('did-finish-load', () => {
+    // 窗口可能在加载完成前就被关闭/销毁（GAP-05）
+    if (!win || win.isDestroyed()) return;
+    win.show(); win.focus();
+  });
   // ESC 第二层：页面脚本异常时主进程兜底（第一层是页面 keydown，第三层是全局接管）
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type === 'keyDown' && input.key === 'Escape') closeByUser();

@@ -3,55 +3,67 @@ const path = require('path');
 const { getResourcesPath } = require('./paths');
 const config = require('./config');
 
-const AUDIO_EXT = new Set(['.wav', '.mp3', '.m4a', '.ogg', '.flac']);
-const VIDEO_EXT = new Set(['.mp4', '.webm', '.m4v']);
-const PPT_EXT = new Set(['.pptx', '.ppt', '.ppsx']);
+// 与 transcode.js 全格式清单一致：库里能显示的格式全集；
+// Chromium 不能直接播的格式在导入/播放时自动转码为 MP4/MP3（见 transcode.js）
+const AUDIO_EXT = new Set(['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.aac', '.opus', '.wma', '.ape', '.amr', '.aiff', '.aif', '.mka', '.ra', '.ac3', '.dts']);
+const VIDEO_EXT = new Set(['.mp4', '.webm', '.m4v', '.ogv', '.mov', '.mkv', '.avi', '.wmv', '.flv', '.ts', '.m2ts', '.3gp', '.3g2', '.mpg', '.mpeg', '.vob', '.asf', '.rm', '.rmvb', '.f4v']);
+const PPT_EXT = new Set(['.pptx', '.ppt', '.ppsx']);          // PowerPoint/WPS 可 COM 放映（翻页/胶片/备注全支持）
+// 课件库扩展为「各种文档」：PDF/Word/Excel/RTF/WPS/ODF 等 + 图片，均能用系统默认程序打开投屏
+const DOC_EXT = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.odp', '.odt', '.ods', '.rtf', '.wps', '.et', '.dps', '.dpt', '.pot', '.potx', '.potm', '.pptm', '.vsd', '.vsdx', '.txt']);
+const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tif', '.tiff', '.svg']);
+const COURSEWARE_EXT = new Set([...PPT_EXT, ...DOC_EXT, ...IMG_EXT]);
+const COURSEWARE_EXT_ARR = [...COURSEWARE_EXT].map((e) => e.slice(1)); // 对话框过滤器用（去点）
+function isPptExt(ext) { return PPT_EXT.has(String(ext).toLowerCase()); }
 
-function listAudioFiles(dir) {
+// 库扫描一律走 fs.promises：这些都是跑在主进程事件循环上的目录遍历，
+// 同步版本（readdirSync/statSync）在网络盘/U 盘上会冻结菜单、窗口拖动、全局快捷键与计时 tick。
+async function listAudioFiles(dir) {
   try {
-    return fs.readdirSync(dir, { withFileTypes: true })
+    const ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    return ents
       .filter((e) => e.isFile() && AUDIO_EXT.has(path.extname(e.name).toLowerCase()))
       .map((e) => path.join(dir, e.name));
   } catch { return []; }
 }
 
-function scanCategories(rootDir, builtinTag) {
+async function scanCategories(rootDir, builtinTag) {
   const cats = [];
-  try {
-    for (const ent of fs.readdirSync(rootDir, { withFileTypes: true })) {
-      if (!ent.isDirectory()) continue;
-      const files = listAudioFiles(path.join(rootDir, ent.name));
-      // 空文件夹也保留：用户新建的分类就是空的，放歌后自动有内容
-      cats.push({ category: ent.name, builtin: builtinTag, tracks: files });
-    }
-  } catch { }
+  let ents = [];
+  try { ents = await fs.promises.readdir(rootDir, { withFileTypes: true }); } catch { return cats; }
+  for (const ent of ents) {
+    if (!ent.isDirectory()) continue;
+    const files = await listAudioFiles(path.join(rootDir, ent.name));
+    // 空文件夹也保留：用户新建的分类就是空的，放歌后自动有内容
+    cats.push({ category: ent.name, builtin: builtinTag, tracks: files });
+  }
   return cats;
 }
 
 // 内置曲库（resources/music/<分类>/*）+ 用户曲库（musicDir/<分类>/*），同名分类合并
-function scanMusic() {
+async function scanMusic() {
   const cfg = config.get();
   const raw = [];
 
   if (cfg.builtinMusicEnabled) {
-    raw.push(...scanCategories(path.join(getResourcesPath(), 'music'), true));
+    raw.push(...await scanCategories(path.join(getResourcesPath(), 'music'), true));
   }
   if (cfg.musicDir) {
-    raw.push(...scanCategories(cfg.musicDir, false));
+    raw.push(...await scanCategories(cfg.musicDir, false));
     // 根目录散落的音频归入「我的音乐」（虚拟分类，不可删除）
-    const loose = listAudioFiles(cfg.musicDir);
+    const loose = await listAudioFiles(cfg.musicDir);
     if (loose.length) raw.push({ category: '我的音乐', builtin: false, virtual: true, tracks: loose });
   }
   return mergeCategories(raw);
 }
 
-// 同名分类（如用户自建「暖场」文件夹）合并为一个卡片，曲目去重
+// 同名分类（如用户自建「暖场」文件夹）合并为一个卡片，曲目去重（Set 去重替代 includes，O(n)）
 function mergeCategories(list) {
   const map = new Map();
   for (const c of list) {
     const ex = map.get(c.category);
     if (ex) {
-      for (const t of c.tracks) if (!ex.tracks.includes(t)) ex.tracks.push(t);
+      const seen = new Set(ex.tracks);
+      for (const t of c.tracks) if (!seen.has(t)) { seen.add(t); ex.tracks.push(t); }
       ex.builtin = ex.builtin && c.builtin;
       ex.virtual = ex.virtual && !!c.virtual;
     } else {
@@ -73,43 +85,47 @@ function applyOrder(list, order) {
   });
 }
 
-function scanVideos() {
+async function scanVideos() {
   const cfg = config.get();
   const out = [];
   if (cfg.videoDir) {
-    for (const f of listFiles(cfg.videoDir, VIDEO_EXT)) {
-      const st = safeStat(f);
-      out.push({ file: f, name: path.basename(f), size: st.size, mtime: st.mtimeMs });
-    }
+    const files = await listFiles(cfg.videoDir, VIDEO_EXT);
+    const stats = await Promise.all(files.map((f) => safeStat(f)));
+    files.forEach((f, i) => out.push({ file: f, name: path.basename(f), size: stats[i].size, mtime: stats[i].mtimeMs }));
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return applyOrder(out, cfg.videoOrder);
 }
 
-// 课件库：pptDir 下的 PPT/PPTX/PPSX，排序规则同视频库
-function scanPpts() {
+// 课件库：pptDir 下的各种文档（PPT 走 COM 集成放映；PDF/Word/Excel/图片等用系统默认程序打开投屏）
+// kind: 'ppt'=COM可放映(翻页/胶片/备注) · 'img'=图片(自身作缩略图) · 'doc'=其它文档(占位图标)
+async function scanPpts() {
   const cfg = config.get();
   const out = [];
   if (cfg.pptDir) {
-    for (const f of listFiles(cfg.pptDir, PPT_EXT)) {
-      const st = safeStat(f);
-      out.push({ file: f, name: path.basename(f), size: st.size, mtime: st.mtimeMs });
-    }
+    const files = await listFiles(cfg.pptDir, COURSEWARE_EXT);
+    const stats = await Promise.all(files.map((f) => safeStat(f)));
+    files.forEach((f, i) => {
+      const ext = path.extname(f).toLowerCase();
+      const kind = isPptExt(ext) ? 'ppt' : IMG_EXT.has(ext) ? 'img' : 'doc';
+      out.push({ file: f, name: path.basename(f), size: stats[i].size, mtime: stats[i].mtimeMs, kind });
+    });
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return applyOrder(out, cfg.pptOrder);
 }
 
-function listFiles(dir, extSet) {
+async function listFiles(dir, extSet) {
   try {
-    return fs.readdirSync(dir, { withFileTypes: true })
+    const ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    return ents
       .filter((e) => e.isFile() && extSet.has(path.extname(e.name).toLowerCase()))
       .map((e) => path.join(dir, e.name));
   } catch { return []; }
 }
 
-function safeStat(f) {
-  try { return fs.statSync(f); } catch { return { size: 0, mtimeMs: 0 }; }
+async function safeStat(f) {
+  try { return await fs.promises.stat(f); } catch { return { size: 0, mtimeMs: 0 }; }
 }
 
 function pushRecent(kind, file) {
@@ -119,4 +135,4 @@ function pushRecent(kind, file) {
   config.save({ [key]: list });
 }
 
-module.exports = { scanMusic, scanVideos, scanPpts, pushRecent, AUDIO_EXT, VIDEO_EXT, PPT_EXT };
+module.exports = { scanMusic, scanVideos, scanPpts, pushRecent, mergeCategories, applyOrder, AUDIO_EXT, VIDEO_EXT, PPT_EXT, DOC_EXT, IMG_EXT, COURSEWARE_EXT, COURSEWARE_EXT_ARR, isPptExt }; // mergeCategories/applyOrder 导出供测试（GAP-01）

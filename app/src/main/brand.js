@@ -30,14 +30,14 @@ function unlock() {
   return cached;
 }
 
-// LOGO 解密后落临时目录，渲染层以 file:// 引用（不进配置、不可持久偷窥）
+// LOGO 解密后落 userData 私有缓存目录（SEC-04：原来落在公共 %TEMP%\xiaotian-brand，其他程序可读）
 let logoPath = null;
 function logoFile() {
   if (logoPath && fs.existsSync(logoPath)) return logoPath;
   const { app } = require('electron');
-  const dir = path.join(app.getPath('temp'), 'xiaotian-brand');
+  const dir = path.join(app.getPath('userData'), 'cache');
   fs.mkdirSync(dir, { recursive: true });
-  logoPath = path.join(dir, 'logo.png');
+  logoPath = path.join(dir, 'brand-logo.png');
   fs.writeFileSync(logoPath, Buffer.from(unlock().logoB64, 'base64'));
   return logoPath;
 }

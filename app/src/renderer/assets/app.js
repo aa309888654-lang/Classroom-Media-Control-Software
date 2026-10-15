@@ -17,6 +17,7 @@ const state = {
   displays: [],
   office: null,
   ppt: { presenting: false, file: '', loading: false },
+  pptPage: null, // 放映中的页码信息 {position,total}，供迷你条显示
   video: { playing: false, file: '' },
   selectedPpt: '',
   conflicts: [],
@@ -27,7 +28,7 @@ const CAT_ICON_POOL = ['music'];
 const HK_LABELS = {
   playPause: '播放 / 暂停', prev: '上一首', next: '下一首', mute: '静音',
   volUp: '音量 +', volDown: '音量 −', cat1: '分类 1 播放', cat2: '分类 2 播放',
-  present: '放映当前课件', exitPresent: '退出投屏',
+  present: '放映当前课件', exitPresent: '退出投屏', pptPrev: 'PPT 上一页', pptNext: 'PPT 下一页',
   timerToggle: '计时器 启动/暂停', timerReset: '计时器 重置',
   openFull: '全屏（LED投屏）', exitFull: '退出全屏',
 };
@@ -74,14 +75,26 @@ async function init() {
   state.conflicts = d.hotkeyConflicts || [];
   state.selectedPpt = (d.config.recentPpt || [])[0] || '';
 
+  applySectionOrder(); // 按保存的顺序重排主面板板块（音乐/投屏/视频/课堂工具自由布置）
+  bindSectionDrag();   // 板块标题长按/竖向拖动排序
+  initMediaSplit();    // 音视频行分隔条：拖动调整左右/上下大小（持久化）
+
   engine.setCategories(state.music);
   engine.volume = state.config.volume;
   engine.crossfade = state.config.crossfadeSeconds;
   engine.ppFade = state.config.playPauseFadeSeconds;
   engine.loopMode = state.config.loopMode;
   engine.onState = onMusicState;
+  // 播放文件损坏/读不出：提示并自动跳下一首（引擎侧已做连续失败保护）
+  engine.onError = (name, count) => {
+    if (count >= 3) toast('连续多首播放失败：请检查音乐文件夹（U盘是否拔出）', 'error');
+    else toast(`「${name}」播放失败，已跳下一首`, 'warn');
+  };
   applyDensity(state.config.uiDensity);
   applyDisplayMode(state.config.displayMode);
+  // 兼容模式（老旧电脑关 GPU 加速后重启生效）：渲染层同步挂类，CSS 据此去掉毛玻璃/重阴影/持续动画
+  document.body.classList.toggle('compat-mode', !!state.config.compatMode);
+  applyToolsVisibility(); // 顶栏「工具」按钮记忆的课堂工具显隐
   // 迷你模式记忆：上次关机时若在迷你模式，直接以迷你面板启动（LED 模式优先，互斥）
   if (state.config.miniMode && state.config.displayMode !== 'led') {
     document.body.classList.add('mini-mode');
@@ -91,6 +104,7 @@ async function init() {
 
   bindUI();
   renderAll();
+  syncLoopBtn({ loopMode: engine.loopMode }); // 循环按钮文案按保存的配置初始化（不只是默认「列表」）
   subscribe();
   startProgressLoop();
   Icons.hydrate(document); // 静态图标全局替换（SVG 扁平版）
@@ -112,9 +126,9 @@ function applyPlatformUI() {
 
   // 三个面板的快捷键提示行按实际键位重排
   if (dom.hkHintMusic) dom.hkHintMusic.textContent =
-    `快捷键 ${acc('playPause')} 播放/暂停 · ${acc('prev')}/${acc('next')} 切歌 · ${acc('mute')} 静音 · ${acc('volDown')}/${acc('volUp')} 音量−/＋ · ${acc('cat1')}/${acc('cat2')} 切分类 · ~ 全屏 · Esc 退出全屏 · 长按卡片排序 · ☆置顶 · ⤒导入`;
+    `快捷键 空格/${acc('playPause')} 播放/暂停 · ${acc('prev')}/${acc('next')} 切歌 · ${acc('mute')} 静音 · ${acc('volDown')}/${acc('volUp')} 音量−/＋ · ${acc('cat1')}/${acc('cat2')} 切分类 · ~ 全屏 · Esc 退出全屏 · 拖动行排序 · ☆置顶 · ⤒导入`;
   if (dom.hkHintPpt) dom.hkHintPpt.textContent =
-    `PPT 放映在投影屏全屏 · ${acc('present')} 放映 · ${acc('exitPresent')} 退出 · 课件库长按拖动排序`;
+    `PPT 放映在投影屏全屏 · ${acc('present')} 放映 · ${acc('exitPresent')} 退出 · ${acc('pptPrev')}/${acc('pptNext')} 翻页 · 课件库长按拖动排序`;
   if (dom.hkHintTimer) dom.hkHintTimer.textContent =
     `计时 ${acc('timerToggle')} 启停 · ${acc('timerReset')} 重置`;
 
@@ -134,9 +148,31 @@ function applyPlatformUI() {
 
 function subscribe() {
   window.api.on('hotkey', (action) => handleHotkey(action));
-  window.api.on('music:restore', ({ action }) => (action === 'duck' ? engine.duck() : engine.restore()));
-  window.api.on('ppt:state', (s) => { state.ppt = { ...state.ppt, ...s }; renderPptState(); renderMode(); });
-  window.api.on('video:state', (v) => { state.video = v; renderVideoState(); renderMode(); });
+  window.api.on('music:restore', ({ action, immediate }) => (action === 'duck' ? engine.duck(!!immediate) : engine.restore()));
+  // 转码进度（添加/播放冷门格式视频、音频时自动转码为 MP4/MP3）
+  window.api.on('import:progress', (p) => {
+    if (!p) { dom.osd.hidden = true; return; }
+    showOSD(`⏳ 转码中 ${p.pct}%：${p.label}`);
+  });
+  // 库缩略图异步生成完成：视频/课件芯片补图（只补这一张，不再整列表重建，PERF-03）
+  window.api.on('thumb:ready', ({ kind, file, thumb }) => {
+    if (!thumb) return;
+    const list = kind === 'video' ? state.videos : state.ppts;
+    const it = list.find((x) => x.file === file);
+    if (it && it.thumb !== thumb) {
+      it.thumb = thumb;
+      updateChipThumb(kind, file, thumb);
+    }
+  });
+  window.api.on('ppt:state', (s) => {
+    state.ppt = { ...state.ppt, ...s }; renderPptState(); renderMode();
+    // 放映时的悬浮控制改由主进程的 floatBar（无边框半透明浮条）承担，面板不再自动变形
+  });
+  window.api.on('video:state', (v) => {
+    state.video = v;
+    if (typeof v.windowed === 'boolean') state.config.videoWindowed = v.windowed; // 与主进程持久化保持一致
+    renderVideoState(); renderMode();
+  });
   window.api.on('displays:changed', (list) => { state.displays = list; renderDisplays(); });
   window.api.on('toast', ({ text, type }) => toast(text, type));
   window.api.on('ppt:presenter', (s) => renderPresenter(s));
@@ -152,6 +188,8 @@ function subscribe() {
   // LED 模式：内联视频加载与控制
   window.api.on('video:load', ({ file }) => ledVideoLoad(file));
   window.api.on('video:control', (cmd) => ledVideoControl(cmd));
+  window.api.on('peer:list', (list) => renderPeerList(list));
+  window.api.on('peer:connected', (s) => onPeerConnected(s));
 }
 
 function renderAll() {
@@ -221,8 +259,8 @@ function ledVideoControl(cmd) {
     case 'toggle': v.paused ? v.play().catch(() => {}) : v.pause(); break;
     case 'fwd': v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); break;
     case 'back': v.currentTime = Math.max(0, v.currentTime - 10); break;
-    case 'volUp': v.volume = Math.min(1, v.volume + 0.1); break;
-    case 'volDown': v.volume = Math.max(0, v.volume - 0.1); break;
+    case 'volUp': v.volume = Math.min(1, v.volume + 0.05); break;
+    case 'volDown': v.volume = Math.max(0, v.volume - 0.05); break;
     case 'stop':
       v.pause(); v.src = ''; v.hidden = true;
       dom.ledIdle.hidden = false;
@@ -231,22 +269,30 @@ function ledVideoControl(cmd) {
   }
 }
 
-/* ---------- 播放进度条（requestAnimationFrame，仅播放中且页面可见时逐帧刷新） ---------- */
+/* ---------- 播放进度条（rAF 循环 + 250ms 节流：低性能电脑上不再逐帧重排，仅播放中运行） ---------- */
 let progressRAF = null;
-function tickProgress() {
+let lastProgressTs = 0;
+function tickProgress(ts) {
   progressRAF = null;
+  const now = ts || performance.now();
   const ch = engine.channels[engine.active];
   const el = ch && ch.el;
   const dur = el && isFinite(el.duration) ? el.duration : 0;
   const show = engine.idx >= 0 && dur > 0;
-  dom.npProgress.style.display = show ? 'block' : 'none';
-  dom.npTime.style.display = show ? 'block' : 'none';
-  if (show) {
-    dom.npFill.style.width = `${(el.currentTime / dur) * 100}%`;
-    dom.npTime.textContent = `${fmtTime(el.currentTime)} / ${fmtTime(dur)}`;
+  if (!lastProgressTs || now - lastProgressTs >= 250) {
+    lastProgressTs = now;
+    dom.npProgress.style.display = show ? 'block' : 'none';
+    dom.npTime.style.display = show ? 'block' : 'none';
+    if (show) {
+      const ratio = (el.currentTime / dur) * 100;
+      dom.npFill.style.width = `${ratio}%`;
+      if (dom.npKnob) dom.npKnob.style.left = `${ratio}%`;
+      dom.npTime.textContent = `${fmtTime(el.currentTime)} / ${fmtTime(dur)}`;
+    }
   }
-  // 有曲目在（播放/暂停/元数据加载中）就续帧等它；完全空闲（从未播放/已停止）才彻底停
-  if (engine.idx >= 0) progressRAF = requestAnimationFrame(tickProgress);
+  // 只在「时间确实在走」时续帧：暂停/播完后 currentTime 不变，继续 60fps 空转纯属烧 CPU。
+  // 恢复播放时 engine.emit() → onMusicState → kickProgressLoop() 会重新唤起，不依赖常驻循环。
+  if (engine.idx >= 0 && engine.playing) progressRAF = requestAnimationFrame(tickProgress);
 }
 function kickProgressLoop() {
   if (progressRAF || document.hidden) return;
@@ -266,130 +312,305 @@ function fmtTime(s) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-/* ---------- 音乐 ---------- */
-const expandedCats = new Set(); // 记住用户展开了哪些分类（默认只露 3 首）
-const CAT_SHOW_DEFAULT = 3;
+/* ---------- 循环模式：下拉菜单多选（list=列表循环 · single=单曲循环 · once=顺序播放播完停止） ---------- */
+const LOOP_MODES = [
+  { key: 'list', label: '列表循环', desc: '整个列表播完自动从头再来' },
+  { key: 'single', label: '单曲循环', desc: '重复播放当前这一首' },
+  { key: 'once', label: '顺序播放', desc: '列表播完自动停止' },
+];
+const LOOP_LABEL = { list: '列表', single: '单曲', once: '顺序' };
+let loopMenuEl = null; // 懒建的单例菜单，打开时定位到按钮下方
+
+function syncLoopBtn(s) {
+  const mode = (s && s.loopMode) || engine.loopMode || 'list';
+  if (dom.btnLoop) dom.btnLoop.textContent = `循环：${LOOP_LABEL[mode] || '列表'} ▾`;
+  if (loopMenuEl) markLoopMenu(mode);
+}
+
+function markLoopMenu(mode) {
+  if (!loopMenuEl) return;
+  loopMenuEl.querySelectorAll('.loop-menu-item').forEach((it) => {
+    it.classList.toggle('on', it.dataset.mode === mode);
+  });
+}
+
+function closeLoopMenu() {
+  if (!loopMenuEl) return;
+  loopMenuEl.remove();
+  loopMenuEl = null;
+  document.removeEventListener('pointerdown', onLoopMenuOutside, true);
+  window.removeEventListener('resize', closeLoopMenu);
+  dom.btnLoop.classList.remove('on');
+}
+
+// 菜单外点击/窗口尺寸变化即收起（capture 阶段先于按钮 click，避免同一点击“开了又关”）
+function onLoopMenuOutside(e) {
+  if (loopMenuEl && !loopMenuEl.contains(e.target) && e.target !== dom.btnLoop) closeLoopMenu();
+}
+
+function openLoopMenu() {
+  closeLoopMenu();
+  const cur = engine.loopMode || 'list';
+  const menu = document.createElement('div');
+  menu.className = 'loop-menu';
+  menu.setAttribute('role', 'menu');
+  LOOP_MODES.forEach((m) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'loop-menu-item' + (m.key === cur ? ' on' : '');
+    item.dataset.mode = m.key;
+    item.setAttribute('role', 'menuitemradio');
+    item.setAttribute('aria-checked', m.key === cur ? 'true' : 'false');
+    item.innerHTML = `<span class="lm-check">✓</span><span class="lm-text">${m.label}<span class="lm-desc">${m.desc}</span></span>`;
+    item.onclick = () => {
+      engine.setLoopMode(m.key);
+      closeLoopMenu();
+    };
+    menu.appendChild(item);
+  });
+  document.body.appendChild(menu);
+  // 定位：按钮下方，右边界不超出视口
+  const r = dom.btnLoop.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - mw - 8);
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${top}px`;
+  loopMenuEl = menu;
+  dom.btnLoop.classList.add('on');
+  document.addEventListener('pointerdown', onLoopMenuOutside, true);
+  window.addEventListener('resize', closeLoopMenu);
+}
+
+/* ---------- 音乐（播放器布局：左分类歌单 + 右曲目列表 + 底部播放条） ---------- */
+let selCatView = ''; // 右侧曲目列表当前展示的分类
+let followedCat = ''; // 上一次跟随播放切到的分类（仅播放分类变化时跟随，调音量等不抢走手动浏览）
+let catListExpanded = false; // 歌单栏收起时（只显示前 N 个）点「还有 N 个分类…」临时展开全部
+
+// 歌单栏头数量显示：收起时「3/10」，全部时「全部」
+function syncCatShowVal() {
+  if (!dom.catShowVal) return;
+  const v = Math.max(0, Number(state.config.catShowLimit) || 0);
+  const total = state.music.length;
+  dom.catShowVal.textContent = v > 0 ? `${Math.min(v, total)}/${total}` : '全部';
+}
+
+// 选中分类失效（被删/为空）时兜底：优先跟随播放中的分类，否则第一个
+function ensureSelCat() {
+  if (state.music.some((c) => c.category === selCatView)) return;
+  selCatView = (engine.category && state.music.some((c) => c.category === engine.category))
+    ? engine.category
+    : (state.music[0] ? state.music[0].category : '');
+}
 
 function renderCategories() {
-  const box = dom.catCards;
-  const frag = document.createDocumentFragment();
-  state.music.forEach((cat, i) => {
-    const el = document.createElement('div');
-    el.className = 'cat-card' + (engine.category === cat.category && engine.playing ? ' active' : '');
+  renderCatList();
+  renderTrackList();
+}
 
-    // 头部（图标 + 名称 + 曲数）：点击 = 播放/暂停该分类（保持原交互）
-    const head = document.createElement('div');
-    head.className = 'cat-head';
-    // 不要左上角图标：分类名+数字，直接顶在卡左上角
-    head.innerHTML = `
-      <span>
-        <div class="cat-name">${esc(cat.category)}</div>
-        <div class="cat-count">${cat.tracks.length} 首</div>
-      </span>`;
-    head.onclick = () => {
-      if (Date.now() < suppressClickUntil) return; // 刚拖完，别误触发播放
+/* 左侧分类歌单：点击=选中查看曲目 · ▶=播放/暂停 · 双击曲目行=播放 · 管理模式可导入/删除/拖动排序 */
+function renderCatList() {
+  ensureSelCat();
+  const box = dom.catList;
+  const frag = document.createDocumentFragment();
+  // 显示数量（歌单栏头 −/＋ 调节，默认 3 个）：0=全部；N=只显示排序后的前 N 个。
+  // 收起时超出数量的不渲染，点「还有 N 个分类…」临时展开（带「隐藏」标记）；管理模式始终全量显示
+  const limit = Math.max(0, Number(state.config.catShowLimit) || 0);
+  const total = state.music.length;
+  const collapsed = !state.addMode && limit > 0 && limit < total && !catListExpanded;
+  const shown = collapsed ? state.music.slice(0, limit) : state.music;
+  const hiddenFrom = (limit > 0 && !state.addMode) ? Math.min(limit, total) : total;
+  shown.forEach((cat, i) => {
+    const isHidden = i >= hiddenFrom;
+    const isCur = engine.category === cat.category;
+    const el = document.createElement('div');
+    el.className = 'cat-item' + (cat.category === selCatView ? ' sel' : '') + (isCur ? ' playing' : '') + (isHidden ? ' cat-hidden' : '');
+    if (isHidden) el.title = '已隐藏：正常模式不显示，曲目仍可播放与管理';
+    el.dataset.cat = cat.category;
+
+    // 行首播放钮：一键播放该分类；正在播放时变暂停键（点击=暂停/继续）
+    const play = document.createElement('button');
+    play.className = 'ci-play';
+    play.title = isCur ? '暂停/继续该分类' : '播放该分类';
+    play.innerHTML = '<span class="ico"></span>';
+    Icons.set(play.querySelector('.ico'), isCur && engine.playing ? 'pause' : 'play', 13);
+    play.onclick = (e) => {
+      e.stopPropagation();
+      if (Date.now() < suppressClickUntil) return;
       if (!engine.playCategory(cat.category)) {
         toast(`「${cat.category}」还没有音乐，把 MP3/WAV 放进对应文件夹即可`, 'warn');
       }
     };
-    el.appendChild(head);
-    el.dataset.cat = cat.category;
-    bindCardDrag(el, cat); // 整卡长按拖动排序
+    el.appendChild(play);
 
-    // 添加模式打开时，才显示该分类的「＋」添加小图标（默认收起，不占视觉）
+    const name = document.createElement('span');
+    name.className = 'ci-name';
+    name.textContent = cat.category;
+    el.appendChild(name);
+
+    const count = document.createElement('span');
+    count.className = 'ci-count';
+    count.textContent = `${cat.tracks.length}首`;
+    el.appendChild(count);
+
+    if (isHidden) {
+      const tag = document.createElement('span');
+      tag.className = 'cat-hidden-tag';
+      tag.textContent = '隐藏';
+      el.appendChild(tag);
+    }
+
+    // 管理模式：行上「＋」添加音乐 / 「✕」删除分类
     if (state.addMode) {
       const imp = document.createElement('span');
-      imp.className = 'cat-import mini';
+      imp.className = 'ci-import';
       imp.innerHTML = '<span class="ico"></span>';
-      Icons.set(imp.querySelector('.ico'), 'plus', 13);
+      Icons.set(imp.querySelector('.ico'), 'plus', 12);
       imp.title = '添加音乐到该分类（复制到音乐文件夹，长期保存）';
-      imp.onclick = async (e) => {
-        e.stopPropagation();
-        const r = await window.api.invoke('music:import', cat.category);
-        if (!r || r.canceled) return;
-        if (r.ok && r.imported > 0) {
-          state.music = r.music;
-          applyCatOrder();
-          applyPinned();
-          engine.setCategories(state.music);
-          renderCategories();
-          toast(`已添加 ${r.imported} 首到「${cat.category}」，已存入音乐文件夹`, 'ok');
-        } else if (r.ok) {
-          toast('未添加：所选文件不是支持的音频格式', 'warn');
-        } else {
-          toast('添加失败', 'error');
-        }
-      };
-      head.appendChild(imp);
-    }
-
-    // 曲目列表：默认显示 3 首，点曲名直接点播那一首
-    if (cat.tracks.length) {
-      const list = document.createElement('div');
-      list.className = 'cat-tracks';
-      const showAll = expandedCats.has(cat.category);
-      const pinnedFiles = (state.config.catPinned || {})[cat.category] || [];
-      cat.tracks.slice(0, showAll ? cat.tracks.length : CAT_SHOW_DEFAULT).forEach((f, idx) => {
-        const row = document.createElement('div');
-        row.className = 'cat-track' + (engine.category === cat.category && engine.idx === idx ? ' playing' : '');
-        row.dataset.cat = cat.category;
-        row.dataset.idx = String(idx);
-        const nameEl = document.createElement('span');
-        nameEl.className = 't-name';
-        nameEl.textContent = fileName(f).replace(/\.[^.]+$/, '');
-        row.appendChild(nameEl);
-        // ☆ 置顶到前三 / ★ 取消置顶
-        const pinEl = document.createElement('span');
-        const isPinned = pinnedFiles.includes(f);
-        pinEl.className = 'cat-pin' + (isPinned ? ' on' : '');
-        pinEl.textContent = isPinned ? '★' : '☆';
-        pinEl.title = isPinned ? '取消置顶' : '置顶到默认前三首';
-        pinEl.onclick = (e) => { e.stopPropagation(); togglePin(cat.category, f); };
-        row.appendChild(pinEl);
-        row.title = fileName(f);
-        row.onclick = (e) => { e.stopPropagation(); engine.playTrack(cat.category, idx); };
-        bindTrackDrag(row, cat, idx); // 曲目行长按/竖拖排序
-        list.appendChild(row);
-      });
-      if (cat.tracks.length > CAT_SHOW_DEFAULT) {
-        const more = document.createElement('div');
-        more.className = 'cat-more';
-        more.textContent = showAll ? '▴ 收起' : `▾ 其余 ${cat.tracks.length - CAT_SHOW_DEFAULT} 首`;
-        more.onclick = (e) => {
-          e.stopPropagation();
-          if (showAll) expandedCats.delete(cat.category); else expandedCats.add(cat.category);
-          renderCategories();
-        };
-        list.appendChild(more);
+      imp.onclick = (e) => { e.stopPropagation(); importToCat(cat); };
+      el.appendChild(imp);
+      if (!cat.builtin && !cat.virtual) {
+        const del = document.createElement('span');
+        del.className = 'ci-del';
+        del.textContent = '✕';
+        del.title = '删除分类（文件夹移入回收站）';
+        del.onclick = (e) => { e.stopPropagation(); confirmDeleteCategory(cat.category); };
+        el.appendChild(del);
       }
-      el.appendChild(list);
     }
 
-    if (!cat.builtin && !cat.virtual) {
-      const del = document.createElement('span');
-      del.className = 'cat-del';
-      del.title = '删除分类（文件夹移入回收站）';
-      Icons.set(del, 'x', 10);
-      del.onclick = (e) => { e.stopPropagation(); confirmDeleteCategory(cat.category); };
-      el.appendChild(del);
-    }
+    el.onclick = () => {
+      if (Date.now() < suppressClickUntil) return;
+      if (selCatView !== cat.category) { selCatView = cat.category; renderCategories(); }
+    };
+    el.ondblclick = () => {
+      if (Date.now() < suppressClickUntil) return;
+      if (!engine.playCategory(cat.category)) {
+        toast(`「${cat.category}」还没有音乐，把 MP3/WAV 放进对应文件夹即可`, 'warn');
+      }
+    };
+    bindCatDrag(el, cat); // 分类行长按/竖拖排序
     frag.appendChild(el);
   });
+  // 收起 → 「还有 N 个分类…」展开；已展开 → 「▴ 收起」回到只显示前 N 个
+  const hiddenCount = total - shown.length;
+  if (collapsed && hiddenCount > 0) {
+    const more = document.createElement('div');
+    more.className = 'cat-item cat-morecard';
+    more.textContent = `还有 ${hiddenCount} 个分类… 点此展开`;
+    more.title = '展开查看全部分类；用上方 −/＋ 调整默认显示数量';
+    more.onclick = () => { catListExpanded = true; renderCategories(); };
+    frag.appendChild(more);
+  } else if (catListExpanded && !state.addMode && limit > 0 && limit < total) {
+    const more = document.createElement('div');
+    more.className = 'cat-item cat-morecard';
+    more.textContent = `▴ 收起，只显示前 ${Math.min(limit, total)} 个`;
+    more.title = '收起后只显示排序在前的前几个分类；用上方 −/＋ 调整数量';
+    more.onclick = () => { catListExpanded = false; renderCategories(); };
+    frag.appendChild(more);
+  }
+  // 添加分类入口行（内联输入框）
   const add = document.createElement('div');
-  add.className = 'cat-card cat-add';
-  // 与分类卡一致：无图标，纯文字
-  add.innerHTML = `<span><div class="cat-name">添加分类</div><div class="cat-count">自定义按钮</div></span>`;
+  add.className = 'cat-item cat-add-row';
+  add.innerHTML = '<span class="ico"></span><span>添加分类</span>';
+  Icons.set(add.querySelector('.ico'), 'plus', 13);
   add.onclick = () => showAddCategory(add);
   frag.appendChild(add);
-  if (!state.music.length) {
-    const tip = document.createElement('div');
-    tip.className = 'card dim';
-    tip.style.gridColumn = '1/-1';
-    tip.textContent = '曲库为空：点「＋添加分类」建一个，再往文件夹里放 MP3/WAV';
-    frag.appendChild(tip);
-  }
   box.innerHTML = '';
   box.appendChild(frag);
+  syncCatShowVal();
+}
+
+// 导入音乐到指定分类（管理模式分类行「＋」）
+async function importToCat(cat) {
+  const r = await window.api.invoke('music:import', cat.category);
+  if (!r || r.canceled) return;
+  if (r.ok && r.imported > 0) {
+    state.music = r.music;
+    applyCatOrder();
+    applyPinned();
+    engine.setCategories(state.music);
+    renderCategories();
+    toast(`已添加 ${r.imported} 首到「${cat.category}」，已存入音乐文件夹${r.transcoded ? `（含转码 ${r.transcoded} 首）` : ''}`, 'ok');
+  } else if (r.ok) {
+    toast('未添加：所选文件不是支持的音频格式', 'warn');
+  } else {
+    toast('添加失败', 'error');
+  }
+}
+
+/* 右侧曲目列表：双击行播放（单击只浏览不播放，避免误触）· ☆置顶 · ✕删除 · 长按/竖拖排序；播放中的行换序号为跳动均衡条 */
+function renderTrackList() {
+  const box = dom.catCards;
+  const prevScroll = box.scrollTop; // 重建后保持滚动位置（音量拖动等高频重建时不跳）
+  const cat = state.music.find((c) => c.category === selCatView);
+  dom.selCatName.textContent = cat ? cat.category : '未选择分类';
+  dom.selCatCount.textContent = cat ? `${cat.tracks.length} 首` : '';
+  if (!cat) {
+    box.innerHTML = `<div class="track-empty">${state.music.length
+      ? '← 在左侧选择一个分类，这里显示曲目列表'
+      : '曲库为空：点左侧「＋ 添加分类」建一个，再往文件夹里放 MP3/WAV'}</div>`;
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  if (!cat.tracks.length) {
+    const tip = document.createElement('div');
+    tip.className = 'track-empty';
+    tip.textContent = `「${cat.category}」还没有音乐：管理模式下点分类行的 ＋ 添加，或把 MP3/WAV 放进对应文件夹`;
+    frag.appendChild(tip);
+  }
+  const pinnedFiles = (state.config.catPinned || {})[cat.category] || [];
+  cat.tracks.forEach((f, idx) => {
+    const playingRow = engine.category === cat.category && engine.idx === idx;
+    const row = document.createElement('div');
+    row.className = 'cat-track' + (playingRow ? ' playing' : '');
+    row.dataset.cat = cat.category;
+    row.dataset.idx = String(idx);
+    if (playingRow) {
+      const eq = document.createElement('span');
+      eq.className = 't-eq';
+      eq.innerHTML = '<i></i><i></i><i></i>';
+      row.appendChild(eq);
+    } else {
+      const num = document.createElement('span');
+      num.className = 't-num';
+      num.textContent = String(idx + 1);
+      row.appendChild(num);
+    }
+    const nameEl = document.createElement('span');
+    nameEl.className = 't-name';
+    nameEl.textContent = fileName(f).replace(/\.[^.]+$/, '');
+    row.appendChild(nameEl);
+    // ☆ 置顶到前三 / ★ 取消置顶
+    const pinEl = document.createElement('span');
+    const isPinned = pinnedFiles.includes(f);
+    pinEl.className = 'cat-pin' + (isPinned ? ' on' : '');
+    pinEl.textContent = isPinned ? '★' : '☆';
+    pinEl.title = isPinned ? '取消置顶' : '置顶到默认前三首';
+    pinEl.onclick = (e) => { e.stopPropagation(); togglePin(cat.category, f); };
+    row.appendChild(pinEl);
+    // 删除按钮：移入回收站可找回；管理模式常显，平时悬停显现
+    const delEl = document.createElement('span');
+    delEl.className = 'cat-track-del';
+    delEl.textContent = '✕';
+    delEl.title = '从曲库删除（移入回收站）';
+    delEl.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('music', f, fileName(f)); };
+    row.appendChild(delEl);
+    row.title = `${fileName(f)}\n双击播放（单击不播放，避免误触）`;
+    // 单击只浏览不播放（触屏/单击误触不再抢播）；双击才点播这一首
+    row.ondblclick = (e) => { e.stopPropagation(); engine.playTrack(cat.category, idx); };
+    bindTrackDrag(row, cat, idx); // 曲目行长按/竖拖排序
+    frag.appendChild(row);
+  });
+  box.innerHTML = '';
+  box.appendChild(frag);
+  box.scrollTop = prevScroll;
+  // 正在播放的曲目滚入可视区（切歌/刷新后不用手动翻找；已在可视区内则不动）
+  requestAnimationFrame(() => {
+    const playing = box.querySelector('.cat-track.playing');
+    if (playing) playing.scrollIntoView({ block: 'nearest' });
+  });
 }
 
 /* ---------- 曲目行键盘归类（保留注释位置）：拖动排序实现 ---------- */
@@ -398,7 +619,7 @@ let trackDrag = null; // {el, cat, fromIdx, offY, baseRect}
 function bindTrackDrag(row, cat, idx) {
   row.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (e.target.closest('.cat-pin')) return; // 星标点击留给置顶
+    if (e.target.closest('.cat-pin, .cat-track-del')) return; // 星标/删除点击留给各自
     const sx = e.clientX, sy = e.clientY;
     let dragging = false;
     const timer = setTimeout(() => { dragging = true; startTrackDrag(row, cat, idx, sy); }, 500);
@@ -504,6 +725,20 @@ function persistCatOrder() {
   window.api.invoke('config:save', { catOrder: order });
 }
 
+// 设置音乐板块可见分类数量：n>=total 或显式传 0 → 全部显示；最少 1 个
+function setCatShowLimit(n) {
+  const total = state.music.length;
+  if (n > 0) {
+    n = Math.max(1, Math.min(n, total));
+    if (n >= total) n = 0; // 等于全部时归一化为「全部」
+  }
+  state.config.catShowLimit = n;
+  window.api.invoke('config:save', { catShowLimit: n });
+  syncCatShowVal();
+  renderCategories();
+  toast(n > 0 ? `分类歌单只显示前 ${n} 个：拖动分类行调整顺序，谁在前显示谁` : '分类歌单已设置为显示全部分类', 'ok');
+}
+
 // 曲目顺序规则：①用户手工拖出的分类内顺序 > ②置顶曲提前 > ③扫描基准顺序。
 // 基准顺序在每次曲库重扫时重新捕获，保证取消置顶/未手工排序时能完整还原。
 function applyPinned() {
@@ -549,38 +784,34 @@ function togglePin(category, file) {
   renderCategories();
 }
 
-/* ---------- 分类卡片：长按拖动排序 ---------- */
-let dragState = null;      // {el, cat, offX, offY, baseLeft, baseTop}
+/* ---------- 分类行：竖向拖动排序 ---------- */
+let dragState = null;      // {el, cat, offY}
 let suppressClickUntil = 0; // 拖拽结束后短暂抑制 click，避免误触发播放
 
-function bindCardDrag(el, cat) {
+function bindCatDrag(el, cat) {
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // 曲目行/置顶星/删除/导入/输入框保留各自点击，不进拖拽
-    if (e.target.closest('.cat-track, .cat-more, .cat-pin, .cat-del, .cat-import, .cat-input, .icon-btn, button')) return;
-    const sx = e.clientX, sy = e.clientY;
+    // 播放钮/导入/删除/输入框保留各自点击，不进拖拽
+    if (e.target.closest('button, input, .ci-import, .ci-del, .cat-hidden-tag')) return;
+    const sy = e.clientY;
     let dragging = false;
     // 通道一：长按 0.5s 纹丝不动进入拖拽（触屏友好）
-    const timer = setTimeout(() => { dragging = true; startDrag(el, cat, sx, sy); }, 500);
+    const timer = setTimeout(() => { dragging = true; startCatDrag(el, cat, sy); }, 500);
     const onMove = (ev) => {
-      const dx = ev.clientX - sx;
-      const dy = ev.clientY - sy;
       if (!dragging) {
-        // 通道二：明显横向拖动 → 立即进入拖拽（鼠标用户的手感，无需干等）
-        if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        // 通道二：明显竖向拖动 → 立即进入拖拽（列表竖排，竖移即排列意图）
+        if (Math.abs(ev.clientY - sy) > 10) {
           clearTimeout(timer);
           dragging = true;
-          startDrag(el, cat, sx, sy);
-        } else if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
-          clearTimeout(timer); unlisten(); // 竖向滑动视为滚屏，让位
+          startCatDrag(el, cat, sy);
         }
         return;
       }
-      moveDrag(ev.clientX, ev.clientY);
+      moveCatDrag(ev.clientY);
     };
     const onUp = (ev) => {
       clearTimeout(timer); unlisten();
-      if (dragging) finishDrag(ev.clientX, ev.clientY, cat);
+      if (dragging) finishCatDrag(ev.clientY, cat);
     };
     const unlisten = () => {
       window.removeEventListener('pointermove', onMove);
@@ -593,49 +824,51 @@ function bindCardDrag(el, cat) {
   });
 }
 
-function startDrag(el, cat, x, y) {
+function startCatDrag(el, cat, y) {
   const r = el.getBoundingClientRect();
   el.style.width = `${r.width}px`;
   el.classList.add('dragging');
-  el.style.left = `${r.left}px`;
   el.style.top = `${r.top}px`;
-  dragState = { el, cat, offX: x - r.left, offY: y - r.top };
+  el.style.left = `${r.left}px`;
+  dragState = { el, cat, offY: y - r.top };
 }
 
-function moveDrag(x, y) {
+function moveCatDrag(y) {
   if (!dragState) return;
-  dragState.el.style.left = `${x - dragState.offX}px`;
   dragState.el.style.top = `${y - dragState.offY}px`;
-  const t = dropTargetAt(x, y);
-  $$('#catCards .cat-card').forEach((c) => {
+  const t = catTargetAt(y);
+  $$('#catList .cat-item').forEach((c) => {
     c.classList.toggle('drag-over', !!(t && t.el === c));
   });
 }
 
-function dropTargetAt(x, y) {
-  const cards = $$('#catCards .cat-card:not(.cat-add)').filter((c) => c !== (dragState && dragState.el));
-  for (const c of cards) {
+function catTargetAt(y) {
+  // 拖拽行离流后其余行会上移，漏击概率高——按「行中线最近」决定插入点，任何 y 都有落点
+  const rows = $$('#catList .cat-item')
+    .filter((c) => c !== dragState.el && !c.classList.contains('cat-add-row') && !c.classList.contains('cat-morecard'));
+  if (!rows.length) return null;
+  for (const c of rows) {
     const r = c.getBoundingClientRect();
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-      const target = state.music.find((m) => m.category === c.dataset.cat);
-      if (target) return { cat: target, before: x < r.left + r.width / 2, el: c };
+    if (y < r.top + r.height / 2) {
+      return { cat: state.music.find((m) => m.category === c.dataset.cat), before: true, el: c };
     }
   }
-  return null;
+  const last = rows[rows.length - 1];
+  return { cat: state.music.find((m) => m.category === last.dataset.cat), before: false, el: last };
 }
 
-function finishDrag(x, y, cat) {
+function finishCatDrag(y, cat) {
   if (!dragState) return;
-  const target = dropTargetAt(x, y);
-  const el = dragState.el;
+  const target = catTargetAt(y);
+  const { el } = dragState;
   el.classList.remove('dragging');
-  el.style.left = el.style.top = el.style.width = '';
-  $$('#catCards .cat-card').forEach((c) => c.classList.remove('drag-over'));
+  el.style.top = el.style.left = el.style.width = '';
+  $$('#catList .cat-item').forEach((c) => c.classList.remove('drag-over'));
   dragState = null;
   suppressClickUntil = Date.now() + 150;
 
   const from = state.music.findIndex((c) => c.category === cat.category);
-  if (target && target.cat.category !== cat.category && from !== -1) {
+  if (target && target.cat && target.cat.category !== cat.category && from !== -1) {
     const to = state.music.findIndex((c) => c.category === target.cat.category);
     const [item] = state.music.splice(from, 1);
     let insertAt = target.before ? to : to + 1;
@@ -687,6 +920,49 @@ function showAddCategory(cardEl) {
 
 /* ---------- 自定义分类：删除（确认弹层） ---------- */
 let confirmCb = null;
+// 删除失败错误码 → 友好提示（避免给老师看裸的 not-in-library / EPERM）
+const DELETE_ERR_TEXT = {
+  'bad-args': '参数不对，删除取消',
+  'not-in-library': '不在课件/音乐/视频库目录内，不能删除',
+  'not-found': '文件已不存在（可能刚被移走）',
+  'ppt-presenting': '课件正在放映中：请先退出放映，再删除',
+  busy: '文件被占用（PowerPoint 可能还开着它）：请先切换其它课件或退出放映，再删除',
+};
+// 删除库文件（音乐/视频/课件）：确认弹层 → 移入回收站（误删可找回）
+function confirmDeleteFile(kind, file, name) {
+  const kindName = { video: '视频', ppt: '课件', music: '音乐' }[kind] || '文件';
+  dom.confirmTitle.textContent = `删除${kindName}`;
+  dom.confirmText.textContent = `从库中删除「${name}」？文件将移入回收站（误删可从回收站找回）。`;
+  dom.confirmOverlay.hidden = false;
+  confirmCb = async () => {
+    // PPT：先把当前选中切走，避免 renderPptState 又把这份课件「后台预热打开」锁住文件
+    const wasSelected = kind === 'ppt' && state.selectedPpt === file;
+    if (wasSelected) { state.selectedPpt = ''; renderPptState(); }
+    const r = await window.api.invoke('library:deleteFile', { kind, file });
+    if (!r || !r.ok) {
+      // 失败时把选择还回去（否则用户会以为删成功了，但选区空了）
+      if (wasSelected) { state.selectedPpt = file; renderPptState(); }
+      const err = (r && r.error) || '未知错误';
+      toast(`删除失败：${DELETE_ERR_TEXT[err] || err}`, 'error');
+      return;
+    }
+    if (kind === 'music') {
+      state.music = r.music;
+      applyCatOrder(); applyPinned(); engine.setCategories(state.music); renderCategories();
+    } else if (kind === 'video') {
+      state.videos = r.videos; renderVideos();
+    } else if (kind === 'ppt') {
+      state.ppts = r.ppts; renderPptChips();
+      // 顺手清掉「最近使用」里这条失效记录（删掉的文件不再可点）
+      if (state.config.recentPpt) {
+        state.config.recentPpt = state.config.recentPpt.filter((f) => f !== file);
+        renderRecents();
+      }
+    }
+    toast(`已删除「${name}」（回收站可找回）`, 'ok');
+  };
+}
+
 function confirmDeleteCategory(name) {
   dom.confirmTitle.textContent = '删除分类';
   dom.confirmText.textContent = `删除分类「${name}」？对应文件夹将移入回收站（误删可从回收站找回）。`;
@@ -717,39 +993,85 @@ function scheduleRenderCategories() {
   renderCatsTimer = setTimeout(renderCategories, 120);
 }
 
+let lastMusicRenderSig = ''; // 音乐状态签名：音量拖动等高频 emit 不再触发整个播放器重建（低性能防抖关键）
+let lastPlayIcon = ''; // 播放/暂停图标去抖：只在状态翻转时重写 innerHTML + SVG（PERF-04）
 function onMusicState(s) {
+  // 播放分类变化时右侧曲目列表自动跟随播放（手动浏览其它分类期间不被调音量等操作抢走）
+  if (s.category && s.category !== followedCat) {
+    followedCat = s.category;
+    selCatView = s.category;
+  }
+  const sig = `${s.playing}|${s.category}|${s.index}|${s.loopMode}`;
   lastMusicState = s;
-  scheduleRenderCategories(); // 分类卡激活态与当前曲目高亮都跟着音乐状态走（防抖）
+  if (sig !== lastMusicRenderSig) {
+    lastMusicRenderSig = sig;
+    scheduleRenderCategories(); // 播放/暂停/切歌才重建列表（防抖）
+    // 以下文案只随「切歌/播放暂停/切分类/切循环」变化，随 sig 一起更新；音量拖动不再重写
+    dom.nowTrack.textContent = s.track || (s.playing ? '播放中' : '未在播放');
+    const total = state.music.find((c) => c.category === s.category)?.tracks.length || '?';
+    dom.nowCat.textContent = s.playing
+      ? `分类：${s.category || '—'} · ${s.index + 1}/${total}`
+      : s.track ? `已暂停 · ${s.category || ''}` : '选择一个分类开始播放';
+    syncLoopBtn(s); // 循环模式按钮文案（含下拉菜单高亮）
+  }
   kickProgressLoop(); // 开始播放时唤起进度条循环（空闲时它是停的）
   syncMiniStatus();
-  if (dom.miniPlay) Icons.set(dom.miniPlay.querySelector('.ico'), s.playing ? 'pause' : 'play', 22);
-  dom.nowTrack.textContent = s.track || (s.playing ? '播放中' : '未在播放');
-  const total = state.music.find((c) => c.category === s.category)?.tracks.length || '?';
-  dom.nowCat.textContent = s.playing
-    ? `分类：${s.category || '—'} · ${s.index + 1}/${total}`
-    : s.track ? `已暂停 · ${s.category || ''}` : '选择一个分类开始播放';
   document.querySelector('.now-playing').classList.toggle('playing', s.playing);
-  dom.btnPlay.innerHTML = '<span class="ico"></span>';
-  Icons.set(dom.btnPlay.querySelector('.ico'), s.playing ? 'pause' : 'play', 18);
+  const wantPlayIcon = s.playing ? 'pause' : 'play';
+  if (lastPlayIcon !== wantPlayIcon) {
+    lastPlayIcon = wantPlayIcon;
+    dom.btnPlay.innerHTML = '<span class="ico"></span>';
+    Icons.set(dom.btnPlay.querySelector('.ico'), wantPlayIcon, 18);
+    if (dom.miniPlay) Icons.set(dom.miniPlay.querySelector('.ico'), wantPlayIcon, 22);
+  }
   const volPct = Math.round(s.volume * 100);
   dom.vol.value = volPct;
   dom.vol.style.setProperty('--fill', volPct + '%');
   dom.volVal.textContent = `${volPct}%`;
-  dom.btnLoop.textContent = `循环：${s.loopMode === 'single' ? '单曲' : '列表'}`;
+  syncMuteIcon(s.muted); // 喇叭图标随静音状态切换（静音时不改滑条值，只切图标）
   renderMode();
   window.api.invoke('music:setState', { playing: s.playing, category: s.category, track: s.track, volume: s.volume, loopMode: s.loopMode });
 }
 
+// 静音切换：面板喇叭 / F4 / 遥控页「静音」按钮共用同一动作
+function toggleMusicMute() {
+  const muted = engine.toggleMute();
+  showOSD(muted ? '🔇 已静音' : `🔊 ${Math.round(engine.volume * 100)}%`);
+  syncMuteIcon(muted);
+}
+
+// 喇叭图标：静音显示 volume-x，正常显示 volume-2（只在变化时重绘，避免每帧抖）
+function syncMuteIcon(muted) {
+  if (!dom.btnMute) return;
+  const want = muted ? 'volume-x' : 'volume-2';
+  if (dom.btnMute.dataset.ico !== want) {
+    dom.btnMute.dataset.ico = want;
+    Icons.set(dom.btnMute.querySelector('.ico'), want, 15);
+  }
+  dom.btnMute.classList.toggle('muted', !!muted);
+  dom.btnMute.title = muted ? '取消静音 (F4)' : '静音 (F4)';
+}
+
+// 播放冲突仲裁（BUG-A）：视频投放期间音乐不得起播。
+// 视频侧是**单向** duck（main/index.js 起播时广播 'music:restore' {action:'duck'}），没有反向互斥；
+// 不设这道闸的话，用户按播放键会把刚被 duck 掉的音乐恢复起来，与视频同时出声。
+// 注意：PPT 放映**不拦**音乐——那是产品有意为之（main/index.js:390「放映 PPT 不打断音乐」）。
+function musicBlocked() {
+  if (!state.video.playing) return false;
+  toast('视频投放中，请先停止视频再播放音乐', 'warn');
+  return true;
+}
+
 function handleHotkey(action) {
   switch (action) {
-    case 'playPause': engine.toggle(); break;
-    case 'prev': engine.prev(); break;
-    case 'next': engine.next(); break;
-    case 'volUp': nudgeVolume(0.1); break;
-    case 'volDown': nudgeVolume(-0.1); break;
+    case 'playPause': if (!musicBlocked()) engine.toggle(); break;
+    case 'prev': if (!musicBlocked()) engine.prev(); break;
+    case 'next': if (!musicBlocked()) engine.next(); break;
+    case 'volUp': nudgeVolume(0.05); break;
+    case 'volDown': nudgeVolume(-0.05); break;
     case 'cat1': playCatIndex(0); break;
     case 'cat2': playCatIndex(1); break;
-    case 'mute': showOSD(engine.toggleMute() ? '🔇 静音' : `🔊 ${Math.round(engine.volume * 100)}%`); break;
+    case 'mute': toggleMusicMute(); break;
     case 'openFull': if (!document.body.classList.contains('led-mode')) toggleDisplayMode(); break;
     case 'exitFull': if (document.body.classList.contains('led-mode')) toggleDisplayMode(); break;
     default: break;
@@ -759,24 +1081,208 @@ function handleHotkey(action) {
 function playCatIndex(i) {
   const cat = state.music[i];
   if (!cat) { toast('该分类不存在（曲库为空或只有一类）', 'warn'); return; }
+  if (musicBlocked()) return;
   engine.playCategory(cat.category);
 }
 
-function nudgeVolume(delta) {
-  engine.setVolume(Math.min(1, Math.max(0, engine.volume + delta)));
-  showOSD(`🔊 音量 ${Math.round(engine.volume * 100)}%`);
+  function nudgeVolume(delta) {
+    // 视频投放中：音量快捷键优先调视频窗口（每按一次 5%）；否则调音乐引擎
+    if (state.video.playing) {
+      window.api.invoke('video:control', delta > 0 ? 'volUp' : 'volDown');
+      showOSD(delta > 0 ? '🔊 视频音量 +5%' : '🔉 视频音量 -5%');
+      return;
+    }
+    engine.setVolume(Math.min(1, Math.max(0, engine.volume + delta)));
+    showOSD(`🔊 音量 ${Math.round(engine.volume * 100)}%`);
+  }
+
+/* ---------- 主面板板块：长按拖动排序（顺序持久化到 config.sectionOrder） ---------- */
+
+// 拖动单元 = .content 的直接子面板；视频+音乐并列行（.media-row）整行作为一个单元排序
+function sectionUnits() {
+  return $$('.content > .panel, .content > .media-row');
+}
+function unitKey(u) {
+  return u.dataset.panel || u.dataset.panelRow || '';
+}
+
+// 启动时按保存的顺序重排板块；老配置没记到的板块按默认顺序补在后面
+function applySectionOrder() {
+  const order = (state.config && state.config.sectionOrder) || [];
+  if (!Array.isArray(order) || !order.length) return;
+  const byKey = {};
+  sectionUnits().forEach((u) => { const k = unitKey(u); if (k) byKey[k] = u; });
+  if (!order.some((k) => byKey[k])) return;
+  const frag = document.createDocumentFragment();
+  order.forEach((k) => { if (byKey[k]) { frag.appendChild(byKey[k]); delete byKey[k]; } });
+  Object.values(byKey).forEach((u) => frag.appendChild(u));
+  document.querySelector('.content').appendChild(frag);
+}
+
+function bindSectionDrag() {
+  sectionUnits().forEach((unit) => {
+    // 并排行里两个板块头都能发起整行拖动
+    unit.querySelectorAll('.panel-head').forEach((head) => {
+      head.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        if (e.target.closest('button, input, .chip')) return; // 头部里的按钮照常点击
+        const isMouse = e.pointerType === 'mouse';
+        const sx = e.clientX, sy = e.clientY;
+        let dragging = false;
+        // 通道一：长按 0.5s 进入拖拽（触屏友好）
+        const timer = setTimeout(() => { dragging = true; startSectionDrag(unit); }, 500);
+        const onMove = (ev) => {
+          if (!dragging) {
+            const dx = ev.clientX - sx, dy = ev.clientY - sy;
+            if (isMouse) {
+              // 通道二（仅鼠标）：竖向拖动立即进入（板块纵向堆叠，竖移才是排列意图）
+              if (Math.abs(dy) > 14 && Math.abs(dy) > Math.abs(dx)) { clearTimeout(timer); dragging = true; startSectionDrag(unit); return; }
+            } else if (Math.abs(dy) > 14 && Math.abs(dy) >= Math.abs(dx)) {
+              clearTimeout(timer); unlisten(); return; // 触屏竖滑视为滚屏，让位
+            }
+            if (Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy) * 1.4) { clearTimeout(timer); unlisten(); } // 横移视为误触
+            return;
+          }
+          moveSectionDrag(ev.clientY);
+        };
+        const onUp = () => { clearTimeout(timer); unlisten(); if (dragging) finishSectionDrag(unit); };
+        const unlisten = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+      });
+    });
+  });
+}
+
+function startSectionDrag(unit) {
+  unit.classList.add('section-dragging');
+  document.body.classList.add('section-drag-active');
+}
+
+// 实时换位：指针落在哪个板块单元内，按上/下半区插到它前面/后面
+function moveSectionDrag(y) {
+  const drag = document.querySelector('.content > .section-dragging');
+  if (!drag) return;
+  for (const u of sectionUnits()) {
+    if (u === drag) continue;
+    const r = u.getBoundingClientRect();
+    if (y >= r.top && y <= r.bottom) {
+      if (y < r.top + r.height / 2) u.before(drag); else u.after(drag);
+      break;
+    }
+  }
+}
+
+function finishSectionDrag(unit) {
+  unit.classList.remove('section-dragging');
+  document.body.classList.remove('section-drag-active');
+  const order = sectionUnits().map(unitKey).filter(Boolean);
+  if (state.config) state.config.sectionOrder = order;
+  window.api.invoke('config:save', { sectionOrder: order });
+}
+
+/* ---------- 音视频行分隔条：拖动调整视频/音乐占比（左右/上下两用），比例持久化 ---------- */
+const MEDIA_STACK_MQ = window.matchMedia('(max-width: 960px)');
+function applyMediaSplit() {
+  const row = document.querySelector('.media-row');
+  if (!row) return;
+  // Chromium 的 minmax() 内不能用 var()，网格模板由 JS 写内联字面量
+  if (MEDIA_STACK_MQ.matches) {
+    const vh = Math.round(Number(state.config.mediaSplitV) > 0 ? Number(state.config.mediaSplitV) : 300);
+    row.style.gridTemplateColumns = '1fr';
+    row.style.gridTemplateRows = `minmax(150px, ${vh}px) 10px minmax(398px, auto)`;
+  } else {
+    const r = Math.min(0.75, Math.max(0.25, Number(state.config.mediaSplit) || 0.41));
+    row.style.gridTemplateColumns = `minmax(280px, ${r}fr) 10px minmax(0, ${Math.round((1 - r) * 10000) / 10000}fr)`;
+    row.style.gridTemplateRows = '';
+  }
+}
+MEDIA_STACK_MQ.addEventListener ? MEDIA_STACK_MQ.addEventListener('change', () => applyMediaSplit()) : MEDIA_STACK_MQ.addListener(() => applyMediaSplit());
+function initMediaSplit() {
+  applyMediaSplit();
+  const handle = dom.mediaSplit;
+  if (!handle) return;
+  let dragging = false;
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    dragging = true;
+    try { handle.setPointerCapture(e.pointerId); } catch { }
+    document.body.classList.add('media-splitting');
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    applySplitFromPointer(e.clientX, e.clientY);
+  });
+  const finish = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    document.body.classList.remove('media-splitting');
+    applySplitFromPointer(e.clientX, e.clientY, true);
+  };
+  handle.addEventListener('pointerup', finish);
+  handle.addEventListener('pointercancel', finish);
+
+  function applySplitFromPointer(x, y, persist = false) {
+    const row = document.querySelector('.media-row');
+    const rect = row.getBoundingClientRect();
+    if (!MEDIA_STACK_MQ.matches) {
+      // 左右并排：视频列占比 = 指针位置（分隔条 10px 不计入）
+      const ratio = Math.min(0.75, Math.max(0.25, (x - rect.left - 5) / (rect.width - 10)));
+      row.style.gridTemplateColumns = `minmax(280px, ${Math.round(ratio * 10000) / 10000}fr) 10px minmax(0, ${Math.round((1 - ratio) * 10000) / 10000}fr)`;
+      if (persist) { state.config.mediaSplit = Math.round(ratio * 10000) / 10000; window.api.invoke('config:save', { mediaSplit: state.config.mediaSplit }); }
+    } else {
+      // 上下堆叠：视频区高度（音乐板保持固有最小高度 398px）
+      const vh = Math.round(Math.min(Math.max(150, y - rect.top - 5), rect.height - 398 - 10));
+      row.style.gridTemplateRows = `minmax(150px, ${vh}px) 10px minmax(398px, auto)`;
+      if (persist) { state.config.mediaSplitV = vh; window.api.invoke('config:save', { mediaSplitV: vh }); }
+    }
+  }
+}
+
+/* ---------- 课堂工具显隐（顶栏「工具」按钮，记忆到配置） ---------- */
+function applyToolsVisibility() {
+  const visible = state.config.toolsVisible !== false; // 缺省显示
+  const card = document.querySelector('#toolsCard');
+  if (card) card.hidden = !visible;
+  const grid = document.querySelector('[data-panel="cast"] .grid-2');
+  if (grid) grid.classList.toggle('single', !visible); // 隐藏后 PPT 卡占满整行
+  dom.btnTools.classList.toggle('on', visible);
+  dom.btnTools.title = visible ? '隐藏课堂工具（计时器）' : '显示课堂工具（计时器）';
 }
 
 /* ---------- 投屏 ---------- */
+let lastPreopenPpt = ''; // 已触发预打开的课件
 function renderPptState() {
   const p = state.ppt;
-  dom.pptFile.textContent = p.file || state.selectedPpt || '未选择';
-  dom.pptFile.title = p.file || state.selectedPpt || '';
+  const shownPpt = p.file || state.selectedPpt || '';
+  dom.pptFile.textContent = shownPpt ? fileName(shownPpt) : '未选择'; // 只显示文件名，完整路径放悬停提示
+  dom.pptFile.title = shownPpt;
+  // 当前课件缩略图：与课件库同一张缓存图（有则显示，没有则等 thumb:ready 补）
+  const entry = (state.ppts || []).find((x) => x.file === shownPpt);
+  if (entry && entry.thumb) {
+    dom.pptCurThumb.src = fileUrlImg(entry.thumb);
+    dom.pptCurThumb.hidden = false;
+  } else {
+    dom.pptCurThumb.hidden = true;
+  }
+  // 选中课件变化：后台预打开 PowerPoint（放映只剩 Run，启动秒级）
+  if (shownPpt && shownPpt !== lastPreopenPpt && !p.presenting && !p.loading) {
+    lastPreopenPpt = shownPpt;
+    if (state.pptUserPicked) window.api.invoke('ppt:preopen', shownPpt).catch(() => { }); // 用户点选后才预热放映
+  }
   dom.btnPresent.disabled = !!p.presenting || !!p.loading;
   dom.btnPresent.textContent = p.loading ? '⏳ 正在打开…' : p.presenting ? '🟢 正在放映中' : '▶ 一键放映 PPT';
+  // 不放映/不在打开时：隐藏「退出投屏」按钮（只留放映按钮，面板更干净）；放映中或打开中才出现
+  dom.btnExitPresent.hidden = !(p.presenting || p.loading);
   dom.btnExitPresent.disabled = !p.presenting && !p.loading;
   dom.pptFlipRow.style.display = p.presenting ? 'flex' : 'none';
-  if (!p.presenting) dom.presenterStrip.style.display = 'none';
+  if (!p.presenting) { dom.presenterStrip.style.display = 'none'; state.pptPage = null; state.pptPages = null; }
   // LED 面板 PPT 按钮同步
   dom.ledPptPresent.textContent = p.presenting ? '✕' : '▶';
   dom.ledPptPresent.title = p.presenting ? '退出放映' : '放映 PPT';
@@ -790,16 +1296,56 @@ function renderPptState() {
 
 function renderPresenter(s) {
   if (!s || !s.presenting) { dom.presenterStrip.style.display = 'none'; return; }
+  state.pptPage = { position: s.position, total: s.total };
+  syncMiniStatus(); // 迷你条同步显示页码
   dom.presenterStrip.style.display = 'flex';
   dom.pptPageInfo.textContent = `第 ${s.position} / ${s.total} 页`;
-  if (s.curImg) dom.pptCurImg.src = fileUrlImg(s.curImg);
-  if (s.nextImg) dom.pptNextImg.src = fileUrlImg(s.nextImg);
+  // 5 页胶片：主进程翻页即时回报没带 pages 时沿用上一批，仅更新当前页高亮
+  if (Array.isArray(s.pages) && s.pages.length) state.pptPages = s.pages;
+  renderPptFilm(s.position);
   dom.pptNotes.textContent = s.notes || '（无备注）';
   dom.pptNextNotes.textContent = s.nextNotes || '（无备注）';
 }
 
+// 5 页胶片缩略图：点击任意页跳转（COM Goto，不打断放映）。
+// 按页码差量更新 DOM（复用已有 <img>，不整体重建），翻页时只换高亮不重载图片——否则每页都闪一下
+const filmEls = new Map(); // page -> { item, img }
+function renderPptFilm(position) {
+  const pages = state.pptPages || [];
+  if (!pages.length) return;
+  const box = dom.pptFilm;
+  const want = new Set(pages.map((p) => p.page));
+  for (const [pg, e] of [...filmEls]) {
+    if (!want.has(pg)) { e.item.remove(); filmEls.delete(pg); } // 滑出 5 页窗口的页移除
+  }
+  for (const p of pages) {
+    let e = filmEls.get(p.page);
+    if (!e) {
+      const item = document.createElement('div');
+      item.className = 'ppt-film-item';
+      item.title = `跳到第 ${p.page} 页`;
+      const img = document.createElement('img');
+      img.alt = `第 ${p.page} 页`;
+      img.decoding = 'async';
+      const num = document.createElement('span');
+      num.className = 'ppt-film-num mono';
+      num.textContent = p.page;
+      item.append(img, num);
+      item.onclick = () => window.api.invoke('ppt:goto', p.page);
+      e = { item, img };
+      filmEls.set(p.page, e);
+    }
+    const url = fileUrlImg(p.img);
+    if (e.img.getAttribute('src') !== url) e.img.src = url;
+  }
+  // 窗口滑动后保持页序；再更新当前页高亮
+  const ordered = pages.map((p) => filmEls.get(p.page).item);
+  if (ordered.some((el, i) => box.children[i] !== el)) ordered.forEach((el) => box.appendChild(el));
+  for (const [pg, e] of filmEls) e.item.classList.toggle('cur', pg === position);
+}
+
 function fileUrlImg(p) {
-  return encodeURI(`file:///${String(p).replace(/\\/g, '/')}`) + '?t=' + Date.now();
+  return encodeURI(`file:///${String(p).replace(/\\/g, '/')}`);
 }
 
 function renderRecents() {
@@ -808,9 +1354,25 @@ function renderRecents() {
   (state.config.recentPpt || []).slice(0, 3).forEach((f) => {
     const chip = document.createElement('span');
     chip.className = 'recent-chip' + (f === state.selectedPpt ? ' sel' : '');
-    chip.textContent = fileName(f);
-    chip.title = f;
-    chip.onclick = () => { state.selectedPpt = f; renderRecents(); renderPptState(); };
+    chip.title = `${f}\n点击选用 · ✕ 从最近列表移除`;
+    const nm = document.createElement('span');
+    nm.className = 'rc-name';
+    nm.textContent = fileName(f);
+    chip.appendChild(nm);
+    // ✕ 从最近使用列表移除（仅清记录，不删文件）
+    const rx = document.createElement('span');
+    rx.className = 'recent-chip-del';
+    rx.textContent = '✕';
+    rx.title = '从「最近使用」移除（不删文件）';
+    rx.onclick = (e) => {
+      e.stopPropagation();
+      state.config.recentPpt = (state.config.recentPpt || []).filter((x) => x !== f);
+      window.api.invoke('config:save', { recentPpt: state.config.recentPpt });
+      if (state.selectedPpt === f) { state.selectedPpt = (state.config.recentPpt[0]) || ''; renderPptState(); }
+      renderRecents();
+    };
+    chip.appendChild(rx);
+    chip.onclick = () => { state.selectedPpt = f; state.pptUserPicked = true; renderRecents(); renderPptState(); };
     frag.appendChild(chip);
   });
   box.innerHTML = '';
@@ -837,13 +1399,31 @@ function renderOffice() {
 
 function renderMode() {
   const el = dom.stMode;
-  if (state.ppt.presenting) el.innerHTML = `<i class="dot busy"></i>PPT 放映中`;
-  else if (state.video.playing) el.innerHTML = `<i class="dot busy"></i>视频投放中`;
-  else if (engine.playing) el.innerHTML = `<i class="dot ok"></i>音乐播放中`;
+  const key = state.ppt.presenting ? 'ppt' : state.video.playing ? 'video' : engine.playing ? 'music' : 'idle';
+  if (el.dataset.mode === key) return; // 状态没变不重写 innerHTML（PERF-04：音量拖动每帧都走这里）
+  el.dataset.mode = key;
+  if (key === 'ppt') el.innerHTML = `<i class="dot busy"></i>PPT 放映中`;
+  else if (key === 'video') el.innerHTML = `<i class="dot busy"></i>视频投放中`;
+  else if (key === 'music') el.innerHTML = `<i class="dot ok"></i>音乐播放中`;
   else el.innerHTML = `<i class="dot"></i>空闲`;
 }
 
 /* ---------- 视频 ---------- */
+// 只补一张芯片的缩略图（thumb:ready 用），替代原先每次缩略图就绪都整列表重建
+function updateChipThumb(kind, file, thumb) {
+  const box = kind === 'video' ? dom.videoChips : dom.pptChips;
+  if (!box) return;
+  for (const el of box.children) {
+    if (el.dataset && el.dataset.file === file) {
+      const holder = el.querySelector('.v-thumb');
+      if (!holder) return;
+      holder.classList.remove('ph');
+      holder.innerHTML = `<img src="${fileUrl_(thumb)}" alt="" loading="lazy" decoding="async">`;
+      return;
+    }
+  }
+}
+
 function renderVideos() {
   const box = dom.videoChips;
   if (!state.videos.length) {
@@ -855,8 +1435,20 @@ function renderVideos() {
     const el = document.createElement('div');
     el.className = 'video-chip sortable-chip' + (state.video.playing && state.video.file === v.file ? ' playing' : '');
     el.dataset.file = v.file;
-    el.innerHTML = `<div class="v-name">${esc(v.name)}</div><div class="v-size">${fmtSize(v.size)}</div>`;
-    el.title = `${v.file}\n长按拖动可排序`;
+    // 缩略图：生成好了显示首帧，没好显示占位符（异步生成后 thumb:ready 补图）
+    const thumb = v.thumb
+      ? `<div class="v-thumb"><img src="${fileUrl_(v.thumb)}" alt="" loading="lazy" decoding="async"></div>`
+      : `<div class="v-thumb ph"><span class="ico"></span></div>`;
+    el.innerHTML = `${thumb}<div class="v-name">${esc(v.name)}</div><div class="v-size">${fmtSize(v.size)}</div>`;
+    if (!v.thumb) Icons.set(el.querySelector('.v-thumb.ph .ico'), 'film', 20);
+    el.title = `${v.file}\n点击播放 · 长按拖动可排序`;
+    // 删除按钮：悬停卡片右上角显现，移入回收站可找回
+    const vdel = document.createElement('span');
+    vdel.className = 'chip-del';
+    vdel.title = '从视频库删除（移入回收站）';
+    vdel.textContent = '✕';
+    vdel.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('video', v.file, v.name); };
+    el.appendChild(vdel);
     el.onclick = () => { if (Date.now() >= chipSuppressUntil) playVideo(v.file); };
     bindChipSort(el, state.videos, 'videoOrder', '#videoChips', renderVideos);
     frag.appendChild(el);
@@ -870,7 +1462,7 @@ function renderPptChips() {
   const box = dom.pptChips;
   if (!box) return;
   if (!state.ppts || !state.ppts.length) {
-    box.innerHTML = `<span class="dim" style="font-size:12px">课件库为空：把 PPT 放进课件文件夹（设置里可改位置）</span>`;
+    box.innerHTML = `<span class="dim" style="font-size:12px">课件库为空：把 PPT/PDF/Word/Excel/图片 放进课件文件夹（设置里可改位置）</span>`;
     return;
   }
   const frag = document.createDocumentFragment();
@@ -878,11 +1470,24 @@ function renderPptChips() {
     const el = document.createElement('div');
     el.className = 'ppt-chip sortable-chip' + (state.selectedPpt === p.file ? ' sel' : '');
     el.dataset.file = p.file;
-    el.innerHTML = `<div class="v-name">${esc(p.name)}</div><div class="v-size">${fmtSize(p.size)}</div>`;
-    el.title = `${p.file}\n点选为当前课件 · 长按拖动可排序`;
+    // 缩略图：PowerPoint COM 导第 1 页；没生成好显示占位符
+    const thumb = p.thumb
+      ? `<div class="v-thumb"><img src="${fileUrl_(p.thumb)}" alt="" loading="lazy" decoding="async"></div>`
+      : `<div class="v-thumb ph"><span class="ico"></span></div>`;
+    el.innerHTML = `${thumb}<div class="v-name">${esc(p.name)}</div>`;
+    if (!p.thumb) Icons.set(el.querySelector('.v-thumb.ph .ico'), 'presentation', 20);
+    el.title = `${p.file}\\n点选为当前课件 · 长按拖动可排序`;
+    // 删除按钮：悬停卡片右上角显现，移入回收站可找回
+    const pdel = document.createElement('span');
+    pdel.className = 'chip-del';
+    pdel.title = '从课件库删除（移入回收站）';
+    pdel.textContent = '✕';
+    pdel.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('ppt', p.file, p.name); };
+    el.appendChild(pdel);
     el.onclick = () => {
       if (Date.now() < chipSuppressUntil) return;
       state.selectedPpt = p.file;
+      state.pptUserPicked = true; // 用户点选后才预热 PowerPoint（放映提速）
       state.config.recentPpt = [p.file, ...(state.config.recentPpt || []).filter((x) => x !== p.file)];
       renderRecents(); renderPptState(); renderPptChips();
     };
@@ -901,6 +1506,7 @@ let chipSuppressUntil = 0; // 拖拽结束后短暂抑制 click，避免误触�
 function bindChipSort(el, list, orderKey, containerSel, rerender) {
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (e.target.closest('.chip-del')) return; // 删除按钮点击不进拖拽
     const sx = e.clientX, sy = e.clientY;
     let dragging = false;
     const begin = () => {
@@ -984,10 +1590,23 @@ function finishChipSort(x, y) {
 function renderVideoState() {
   dom.btnStopVideo.disabled = !state.video.playing;
   dom.videoRemote.style.display = state.video.playing ? 'flex' : 'none';
-  dom.videoHint.textContent = state.video.playing ? `投放中：${fileName(state.video.file)}（投影屏全屏）` : '';
+  const mode = state.video.windowed ? '窗口模式' : '全屏投放';
+  dom.videoHint.textContent = state.video.playing ? `投放中：${fileName(state.video.file)}（${mode}）` : '';
+  if (dom.btnVWinText) dom.btnVWinText.textContent = state.video.windowed ? '切为全屏' : '切为窗口';
   // LED 面板视频按钮同步
   dom.ledVToggle.textContent = state.video.playing ? '⏸' : '▶';
-  renderVideos();
+  syncVideoChipsPlaying(); // 只同步播放态 class，不再整列表重建（PERF-03）
+}
+
+// 只切换各视频芯片的 playing 高亮，不重建 DOM（video:state 每次广播都会走到这里）
+function syncVideoChipsPlaying() {
+  const box = dom.videoChips;
+  if (!box) return;
+  for (const el of box.children) {
+    if (el.dataset && el.dataset.file) {
+      el.classList.toggle('playing', !!(state.video.playing && state.video.file === el.dataset.file));
+    }
+  }
 }
 
 async function playVideo(file) {
@@ -997,10 +1616,19 @@ async function playVideo(file) {
 
 /* ---------- 事件绑定 ---------- */
 function bindUI() {
-  dom.btnPlay.onclick = () => engine.toggle();
-  dom.btnPrev.onclick = () => engine.prev();
-  dom.btnNext.onclick = () => engine.next();
-  dom.btnLoop.onclick = () => engine.setLoopMode(engine.loopMode === 'list' ? 'single' : 'list');
+  dom.btnPlay.onclick = () => { if (!musicBlocked()) engine.toggle(); };
+  dom.btnPrev.onclick = () => { if (!musicBlocked()) engine.prev(); };
+  dom.btnNext.onclick = () => { if (!musicBlocked()) engine.next(); };
+  dom.btnLoop.onclick = (e) => { e.stopPropagation(); if (loopMenuEl) closeLoopMenu(); else openLoopMenu(); };
+  // 「播放全部」：从第一首开始播当前选中分类（正在播该分类时再点=暂停/继续）
+  dom.btnPlayCat.onclick = () => {
+    const cat = state.music.find((c) => c.category === selCatView);
+    if (!cat) return;
+    if (musicBlocked()) return;
+    if (!engine.playCategory(cat.category)) {
+      toast(`「${cat.category}」还没有音乐，把 MP3/WAV 放进对应文件夹即可`, 'warn');
+    }
+  };
 
   // 模式切换
   dom.btnMode.onclick = () => toggleDisplayMode();
@@ -1023,26 +1651,64 @@ function bindUI() {
   dom.ledVFwd.onclick = () => window.api.invoke('video:control', 'fwd');
   dom.ledVStop.onclick = () => window.api.invoke('video:stop');
   dom.ledVPick.onclick = async () => {
-    const f = await window.api.invoke('video:openDialog');
-    if (f) playVideo(f);
+    const r = await window.api.invoke('video:openDialog');
+    if (!r || r.canceled) return;
+    state.videos = r.videos || state.videos;
+    renderVideos();
+    toast(r.imported
+      ? `已添加 ${r.imported} 个视频到视频库${r.transcoded ? `（含转码 ${r.transcoded} 个）` : ''}`
+      : '所选视频已在视频库中', r.imported ? 'ok' : 'info');
   };
 
   // LED 模式下视频结束自动回到待机
+  // 注意守卫：<video> 的 src 被置空、或指向非媒体文件（如误设为页面自身 URL）时，
+  // Chromium 同样会抛 error（code 4 SRC_NOT_SUPPORTED）。非 LED 模式下把这个 error
+  // 当成播放失败处理，会越权把 LED 待机画面盖到控制面板上（本次修复引入的回归）。
+  // 所以两个 handler 都必须先确认确实处于 LED 投放中。
   dom.ledVideo.addEventListener('ended', () => {
+    dom.ledVideo.hidden = true;
+    if (document.body.classList.contains('led-mode')) dom.ledIdle.hidden = false;
+    window.api.invoke('video:notifyEnded');
+  });
+  dom.ledVideo.addEventListener('error', () => {
+    if (!document.body.classList.contains('led-mode')) return; // 空源/非媒体源不算播放失败
     dom.ledVideo.hidden = true;
     dom.ledIdle.hidden = false;
     window.api.invoke('video:notifyEnded');
   });
 
-  // 无线同屏
+  // 无线投屏
   bindCast();
 
-  // 音乐添加模式开关：点亮后各分类出现「＋」添加小图标
+  // 顶栏「工具」：显示/隐藏投屏面板里的课堂工具卡
+  dom.btnTools.onclick = () => {
+    state.config.toolsVisible = state.config.toolsVisible === false; // false→true / 其他→false
+    window.api.invoke('config:save', { toolsVisible: state.config.toolsVisible !== false });
+    applyToolsVisibility();
+  };
+
+  // 音乐管理模式开关：点亮后各分类出现「＋」添加、曲目/分类的 ✕ 删除常显、可长按拖动排序
   dom.btnAddMode.onclick = () => {
     state.addMode = !state.addMode;
     dom.btnAddMode.classList.toggle('on', state.addMode);
+    document.body.classList.toggle('manage-mode', state.addMode);
+    if (state.addMode) toast('管理模式已开启：✕ 删除 · ＋ 添加 · 长按拖动排序；再点「管理音乐」退出', 'info');
+    syncCatShowVal();
     renderCategories();
   };
+
+  // 分类显示数量：0=全部；N=只显示排序后的前 N 个（最少 1）。歌单栏头 −/＋ 随时调节（默认 3 个）
+  dom.btnCatShowMinus.onclick = () => {
+    const cur = Math.max(0, Number(state.config.catShowLimit) || 0);
+    setCatShowLimit(cur === 0 ? state.music.length - 1 : cur - 1); // 「全部」时 − → 少显示一个
+    catListExpanded = false;
+  };
+  dom.btnCatShowPlus.onclick = () => {
+    const cur = Math.max(0, Number(state.config.catShowLimit) || 0);
+    setCatShowLimit(cur === 0 ? 1 : cur + 1); // 「全部」时 ＋ → 从只显示 1 个开始收起
+    catListExpanded = false;
+  };
+  syncCatShowVal();
 
   // 欢迎屏：打开设置弹窗
   dom.btnWelcome.onclick = () => openWelcome();
@@ -1059,22 +1725,92 @@ function bindUI() {
     volRAF = requestAnimationFrame(() => engine.setVolume(val / 100));
   };
 
-  // 进度条点击跳转
-  dom.npProgress.onclick = (e) => {
+  // 喇叭按钮：静音 / 取消静音
+  dom.btnMute.onclick = () => toggleMusicMute();
+
+  // 进度条：点击跳转 + 按住拖动跳转（pointer 捕获，拖出元素也能继续跟手）
+  // 原来只有 onclick：拖动不跟手，老师反映「播放时长调不动」
+  const seekFromPointer = (e) => {
     const ch = engine.channels[engine.active];
     const el = ch && ch.el;
-    if (!el || !isFinite(el.duration) || !el.duration) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    el.currentTime = Math.min(el.duration, Math.max(0, ((e.clientX - rect.left) / rect.width) * el.duration));
+    if (!el || !isFinite(el.duration) || !el.duration) return false;
+    const rect = dom.npProgress.getBoundingClientRect();
+    if (!rect.width) return false;
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    el.currentTime = ratio * el.duration;
+    // 拖动即时反馈（rAF 循环 250ms 节流会跟上，但拖动时让它立刻反映，不滞后）
+    dom.npFill.style.width = `${ratio * 100}%`;
+    if (dom.npKnob) dom.npKnob.style.left = `${ratio * 100}%`;
+    return true;
   };
+  let progDragging = false;
+  dom.npProgress.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!seekFromPointer(e)) return;
+    progDragging = true;
+    dom.npProgress.classList.add('dragging');
+    try { dom.npProgress.setPointerCapture(e.pointerId); } catch { }
+    e.preventDefault(); // 防止拖出选中文本/抢焦点，且避免后续触发多余的 click
+  });
+  dom.npProgress.addEventListener('pointermove', (e) => {
+    if (!progDragging) return;
+    seekFromPointer(e);
+  });
+  const endProgDrag = (e) => {
+    if (!progDragging) return;
+    progDragging = false;
+    dom.npProgress.classList.remove('dragging');
+    try { dom.npProgress.releasePointerCapture(e.pointerId); } catch { }
+  };
+  dom.npProgress.addEventListener('pointerup', endProgDrag);
+  dom.npProgress.addEventListener('pointercancel', endProgDrag);
 
-  // Esc：关确认弹层 / 关设置弹窗 / 停止视频投放 / 关 LED 欢迎屏（兜底）
+  // Esc：关确认弹层 / 关设置弹窗 / 退出放映中的 PPT / 停止视频投放 / 关 LED 欢迎屏（兜底）；~：切 LED 全屏。
+  // 这两键只在本窗口有焦点时生效：不注册为全局快捷键（否则会吞掉 PPT 全屏放映的 Esc），
+  // ~ 在输入框里打字时不触发（避免误切全屏）。
   window.addEventListener('keydown', (e) => {
+    if (e.key === '`' || e.key === '~') {
+      const el = e.target;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+      // `/~ 只在 openFull 仍是默认键位时生效；已改键到别处则由全局快捷键接管，避免新旧两键同时生效
+      const acc = (state.config.hotkeys.openFull || '').toLowerCase();
+      if (!typing && (acc === '`' || acc === '~' || acc === 'grave' || acc === 'backquote')) handleHotkey('openFull');
+      return;
+    }
+    // 空格：播放/暂停（本窗口内生效）。输入框打字不触发；放映 PPT 时空格让位给放映软件。
+    // preventDefault 防页面滚动，也防焦点按钮被空格二次激活造成双重切换
+    if (e.code === 'Space') {
+      const el = e.target;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+      if (!typing && !state.ppt.presenting && !state.ppt.loading) {
+        e.preventDefault();
+        if (!engine.toggle()) showOSD('先在音乐板块选个分类开始播放');
+      }
+      return;
+    }
+    // 放映中 ↑/↓（及 PgUp/PgDn）直接翻页：面板全屏、窗口、迷你形态都生效；
+    // 放映窗口自身有焦点时 PowerPoint/WPS 原生就支持 ↑/↓ 翻页，无需处理
+    if (state.ppt.presenting && !state.ppt.loading && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'PageUp' || e.key === 'PageDown')) {
+      const el = e.target;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+      if (!typing) {
+        e.preventDefault();
+        window.api.invoke(e.key === 'ArrowDown' || e.key === 'PageDown' ? 'ppt:next' : 'ppt:prev');
+        return;
+      }
+    }
     if (e.key !== 'Escape') return;
+    if (loopMenuEl) { closeLoopMenu(); return; }
     if (!dom.confirmOverlay.hidden) { dom.confirmOverlay.hidden = true; confirmCb = null; return; }
+    if (!dom.castOverlay.hidden) { dom.castOverlay.hidden = true; return; }
+    if (!dom.remoteOverlay.hidden) { dom.remoteOverlay.hidden = true; return; }
     if (!dom.settingsOverlay.hidden) { closeSettings(); return; }
     if (wlIsOpen) { window.api.invoke('welcome:toggle'); return; }
+    // 放映中焦点落在面板上时，Esc 会被面板吃掉、放映窗口收不到 → 表现为「按 Esc 退不出全屏」。
+    // 这里转为退出投屏（走 COM 退放映），与放映窗口自身的原生 Esc 行为保持一致
+    if (state.ppt.presenting || state.ppt.loading) { window.api.invoke('ppt:exit'); return; }
     if (state.video.playing) window.api.invoke('video:stop');
+    if (document.body.classList.contains('led-mode')) handleHotkey('exitFull');
   });
 
   // 确认弹层按钮
@@ -1121,20 +1857,35 @@ function bindUI() {
   };
 
   dom.btnPickPpt.onclick = async () => {
-    const f = await window.api.invoke('ppt:openDialog');
-    if (f) { state.selectedPpt = f; state.config.recentPpt = [f, ...(state.config.recentPpt || []).filter((x) => x !== f)]; renderRecents(); renderPptState(); }
+    const r = await window.api.invoke('ppt:openDialog');
+    if (!r) return;
+    state.pptUserPicked = true;
+    if (r.ppts) { state.ppts = r.ppts; renderPptChips(); } // 课件库芯片（含新入库课件的缩略图占位）
+    if (r.imported) toast('课件已加入课件库，缩略图生成中', 'ok');
+    state.selectedPpt = r.file;
+    state.config.recentPpt = [r.file, ...(state.config.recentPpt || []).filter((x) => x !== r.file)];
+    renderRecents(); renderPptState();
   };
   dom.btnPresent.onclick = () => window.api.invoke('ppt:present', state.selectedPpt);
   dom.btnExitPresent.onclick = () => window.api.invoke('ppt:exit');
   dom.btnCast.onclick = () => toggleCast();
   dom.btnExtend.onclick = async () => {
     const r = await window.api.invoke('displays:extend');
-    toast(r.ok ? '已发送扩展模式指令' : 'DisplaySwitch 不可用', r.ok ? 'ok' : 'error');
+    if (r.already) toast('已处于扩展模式', 'ok');
+    else if (r.ok) toast('已切换到扩展模式：第二块屏 = 投影', 'ok');
+    else toast(r.error === 'no-displayswitch' ? '系统缺少 DisplaySwitch，无法自动切换' : '未识别到第二块屏：请检查投影线/HDMI 输入源', 'warn');
   };
 
   dom.btnPickVideo.onclick = async () => {
-    const f = await window.api.invoke('video:openDialog');
-    if (f) playVideo(f);
+    // 选视频 = 入库（复制到视频文件夹，长期保存）；冷门格式自动转码为 MP4；点视频卡片才播放
+    const r = await window.api.invoke('video:openDialog');
+    if (!r || r.canceled) return;
+    state.videos = r.videos || state.videos;
+    renderVideos();
+    if (r.failed) toast(`${r.failed} 个文件转码失败，请检查文件是否损坏`, 'error');
+    toast(r.imported
+      ? `已添加 ${r.imported} 个视频到视频库${r.transcoded ? `（含转码 ${r.transcoded} 个）` : ''}`
+      : '所选视频已在视频库中', r.imported ? 'ok' : 'info');
   };
   dom.btnStopVideo.onclick = () => window.api.invoke('video:stop');
 
@@ -1144,6 +1895,7 @@ function bindUI() {
   dom.btnVFwd.onclick = () => window.api.invoke('video:control', 'fwd');
   dom.btnVVolUp.onclick = () => window.api.invoke('video:control', 'volUp');
   dom.btnVVolDown.onclick = () => window.api.invoke('video:control', 'volDown');
+  dom.btnVWin.onclick = () => window.api.invoke('video:windowToggle');
 
   // 设置
   dom.btnPickMusicDir.onclick = async () => {
@@ -1167,7 +1919,7 @@ function bindUI() {
 let lastMusicState = null; // 最近一次音乐状态（迷你状态行用）
 let miniCollapseTimer = null;
 
-async function toggleMiniMode() {
+async function toggleMiniMode(opts) {
   const entering = !document.body.classList.contains('mini-mode');
   if (entering) {
     // 与 LED 模式互斥：迷你模式是「主面板缩成遥控器」，LED 是「主面板变展示窗」
@@ -1175,13 +1927,14 @@ async function toggleMiniMode() {
       state.config = await window.api.invoke('config:save', { displayMode: 'control' });
       applyDisplayMode('control');
     }
-    const r = await window.api.invoke('window:miniMode', true);
+    const r = await window.api.invoke('window:miniMode',
+      opts && (opts.dockCorner || opts.compact) ? { on: true, dockCorner: !!opts.dockCorner, compact: !!opts.compact } : true);
     if (r && r.ok) {
       document.body.classList.add('mini-mode');
       dom.miniDock.hidden = false;
       state.config = await window.api.invoke('config:save', { miniMode: true });
       syncMiniStatus();
-      toast('已进入迷你模式：拖到右下角可自动隐藏', 'ok');
+      if (!opts || !opts.dockCorner) toast('已进入迷你模式：拖到右下角可自动隐藏', 'ok');
     }
   } else {
     document.body.classList.remove('mini-mode', 'mini-collapsed');
@@ -1195,6 +1948,13 @@ async function toggleMiniMode() {
 function bindMini() {
   dom.btnMini.onclick = () => toggleMiniMode();
   dom.miniExpand.onclick = () => toggleMiniMode();
+  // 收起态小把手：点它展开（BUG-08：原来只有 mouseenter 一条恢复路径，触屏/点击无效）
+  if (dom.miniHandle) {
+    dom.miniHandle.onclick = async () => {
+      const r = await window.api.invoke('window:miniExpand').catch(() => null);
+      if (r && r.ok) document.body.classList.remove('mini-collapsed');
+    };
+  }
   // 迷你按钮全部代理到主面板现有按钮/引擎，零逻辑重复
   dom.miniPlay.onclick = () => dom.btnPlay.click();
   dom.miniNext.onclick = () => dom.btnNext.click();
@@ -1230,23 +1990,146 @@ function syncMiniStatus() {
   if (!dom.miniStatus) return;
   const s = lastMusicState;
   const music = s && s.track ? `♪ ${s.track}${s.playing ? '' : '（已暂停）'}` : '未在播放';
-  const ppt = state.ppt && state.ppt.presenting ? ' · ▶ 放映中' : '';
+  const ppt = state.ppt && state.ppt.presenting
+    ? ` · ▶ ${state.pptPage ? `${state.pptPage.position}/${state.pptPage.total}` : '放映中'}`
+    : '';
   dom.miniStatus.textContent = music + ppt;
 }
 
-/* ---------- 无线同屏 ---------- */
+/* ---------- 无线投屏（顶栏按钮 + 弹窗） ---------- */
 let castRunning = false;
-
+let remoteUrl = '';
+let castToken = ''; // 信令服务访问令牌（内联接收端用 X-Token 头）
 
 function bindCast() {
   // 启动时若服务还在跑（重载页面），恢复按钮与信息
-  window.api.invoke('cast:state').then((s) => { if (s && s.running) renderCast({ running: true, url: s.url, inline: document.body.classList.contains('led-mode') }); }).catch(() => { });
+  window.api.invoke('cast:state').then((s) => { if (s && s.running) renderCast({ running: true, url: s.url, token: s.token, inline: document.body.classList.contains('led-mode') }); }).catch(() => { });
+  // 顶栏「无线投屏」按钮：开关弹窗；开关投屏在弹窗里操作
+  dom.btnCastTop.onclick = () => { dom.castOverlay.hidden = !dom.castOverlay.hidden; };
+  dom.btnCloseCast.onclick = () => { dom.castOverlay.hidden = true; };
+  dom.castOverlay.onclick = (e) => { if (e.target.id === 'castOverlay') dom.castOverlay.hidden = true; };
+  // 无线遥控：打开弹窗（服务未开则自动开启），同一服务同时供投屏与遥控
+  dom.btnRemote.onclick = async () => {
+    dom.remoteOverlay.hidden = false;
+    if (!castRunning) { const r = await window.api.invoke('cast:toggle'); if (r) renderCast(r); }
+    if (remoteUrl) drawRemoteQr(remoteUrl);
+    window.api.invoke('peer:scanStart').catch(() => { }); // 遥控另一台电脑：开始扫描局域网信标
+  };
+  dom.btnCloseRemote.onclick = () => { dom.remoteOverlay.hidden = true; window.api.invoke('peer:scanStop').catch(() => { }); };
+  dom.remoteOverlay.onclick = (e) => { if (e.target.id === 'remoteOverlay') { dom.remoteOverlay.hidden = true; window.api.invoke('peer:scanStop').catch(() => { }); } };
+  dom.btnRemoteToggle.onclick = () => toggleCast();
+  // 页面重载后恢复已在的遥控会话（主进程侧 session 不随页面销毁）
+  window.api.invoke('peer:session').then((s) => { if (s) onPeerConnected(s); }).catch(() => { });
+  // 手动输入 IP 连接（支持 ip:port）
+  dom.btnPeerConnectManual.onclick = () => {
+    const raw = dom.peerIp.value.trim();
+    if (!raw) { toast('请输入被控电脑的 IP', 'error'); return; }
+    const m = /^(.+):(\d+)$/.exec(raw);
+    connectPeer(m ? m[1] : raw, m ? Number(m[2]) || 18333 : 18333, m ? m[1] : raw);
+  };
+  dom.btnPeerDisconnect.onclick = async () => {
+    await window.api.invoke('peer:disconnect').catch(() => { });
+    stopPeerPoll();
+    peerSession = null;
+    dom.peerPanel.hidden = true;
+    dom.peerStatus.textContent = '—';
+  };
+  // 面板里的音乐/PPT/视频按钮：统一按 data-peer/data-cmd 委托下发
+  dom.remoteOverlay.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-peer]');
+    if (!btn || !peerSession) return;
+    window.api.invoke('peer:cmd', { target: btn.dataset.peer, cmd: btn.dataset.cmd, page: Number(btn.dataset.page || 0) })
+      .then((r) => { if (r && r.ok === false) toast(peerErrText(r.error), 'error'); })
+      .catch(() => { });
+  });
+}
+
+/* ---------- 局域网遥控另一台电脑（控制端） ---------- */
+let peerPollTimer = null;
+let peerSession = null; // { name, ip, port }
+
+function peerErrText(err) {
+  const map = {
+    'no-ip': '请输入被控电脑的 IP',
+    unreachable: '连不上对方：检查 IP 是否正确、对方是否已开启遥控',
+    'no-token': '对方服务未就绪，请稍后重试',
+    unauthorized: '鉴权失效，请重新连接',
+    'not-connected': '尚未连接',
+    'bad-cmd': '对方不支持该操作',
+  };
+  return map[err] || '操作失败';
+}
+
+async function connectPeer(ip, port, name) {
+  // 成功后会收到 peer:connected 广播，UI 切换在 onPeerConnected 里做
+  const r = await window.api.invoke('peer:connect', { ip, port, name }).catch(() => ({ ok: false, error: 'unreachable' }));
+  if (!r || !r.ok) toast(peerErrText(r && r.error), 'error');
+}
+
+function onPeerConnected(s) {
+  peerSession = s;
+  dom.peerPanel.hidden = false;
+  dom.peerBadge.textContent = '已连接';
+  dom.peerBadge.classList.remove('idle');
+  const label = `${s.name || s.ip} · ${s.ip}:${s.port}`;
+  dom.peerName.textContent = label;
+  dom.peerName.title = label;
+  renderPeerStatus({});
+  startPeerPoll();
+  toast(`已连接到 ${s.name || s.ip}`, 'ok');
+}
+
+function onPeerLost() {
+  stopPeerPoll();
+  peerSession = null;
+  dom.peerPanel.hidden = true;
+  dom.peerStatus.textContent = '连接已断开';
+  toast('与被控电脑的连接已断开', 'error');
+}
+
+function startPeerPoll() {
+  stopPeerPoll();
+  peerPollTimer = setInterval(async () => {
+    const r = await window.api.invoke('peer:state').catch(() => null);
+    if (!r || !r.ok) { onPeerLost(); return; }
+    renderPeerStatus(r.state || {});
+  }, 1500);
+}
+function stopPeerPoll() { if (peerPollTimer) clearInterval(peerPollTimer); peerPollTimer = null; }
+
+function renderPeerStatus(s) {
+  const m = s.music || {}, p = s.ppt || {}, v = s.video || {};
+  dom.peerStatus.textContent = [
+    m.playing ? `音乐 ${m.track || '播放中'} ${m.volume || 0}%` : '音乐 停止',
+    p.presenting ? `PPT ${p.position || 0}/${p.total || 0}` : 'PPT 未放映',
+    v.playing ? '视频 播放中' : '视频 停止',
+  ].join(' | ');
+}
+
+function renderPeerList(list) {
+  const peers = Array.isArray(list) ? list : [];
+  if (!peers.length) {
+    dom.peerList.innerHTML = '<div class="peer-empty dim">未发现可遥控的电脑（对方需开启「遥控」服务且在同一 WiFi）</div>';
+    return;
+  }
+  dom.peerList.innerHTML = '';
+  for (const p of peers) {
+    const el = document.createElement('div');
+    el.className = 'peer-item' + (peerSession && peerSession.ip === p.ip && peerSession.port === p.port ? ' on' : '');
+    el.innerHTML = '<span class="ico" data-ico="monitor" data-ico-size="13"></span><span class="nm"></span><span class="ip mono"></span>';
+    el.querySelector('.nm').textContent = p.name || p.ip;
+    el.querySelector('.ip').textContent = `${p.ip}:${p.port}`;
+    el.title = `点击连接 ${p.name || p.ip}`;
+    el.onclick = () => connectPeer(p.ip, p.port, p.name);
+    dom.peerList.appendChild(el);
+  }
+  Icons.hydrate(dom.peerList);
 }
 
 async function toggleCast() {
   const r = await window.api.invoke('cast:toggle');
   if (!r || !r.ok) {
-    toast(r && r.error === 'port-busy' ? '同屏端口被占用，请先关闭占用端口的程序' : '同屏开启失败', 'error');
+    toast(r && r.error === 'port-busy' ? '投屏端口被占用，请先关闭占用端口的程序' : '无线投屏开启失败', 'error');
     return;
   }
   renderCast(r);
@@ -1254,7 +2137,21 @@ async function toggleCast() {
 
 function renderCast(s) {
   castRunning = !!s.running;
-  dom.btnCast.innerHTML = `<span class="ico"></span> ${castRunning ? '关闭同屏' : '开启同屏'}`;
+  castToken = s.token || '';
+  // 顶栏按钮同步：开启时点亮
+  remoteUrl = castRunning && s.url ? s.url + '/remote' : '';
+  dom.btnCastTop.classList.toggle('on', castRunning);
+  dom.btnRemote.classList.toggle('on', castRunning);
+  dom.remoteBadge.textContent = castRunning ? '已开启' : '未开启';
+  dom.remoteBadge.classList.toggle('idle', !castRunning);
+  dom.remoteInfo.style.display = castRunning && remoteUrl ? 'flex' : 'none';
+  if (castRunning && remoteUrl) {
+    dom.remoteUrl.textContent = remoteUrl;
+    drawRemoteQr(remoteUrl);
+  }
+  dom.btnRemoteToggle.textContent = castRunning ? '停止服务' : '开启服务';
+  dom.btnCastTop.title = castRunning ? `无线投屏运行中${s.url ? ` · ${s.url}` : ''}（点击查看/关闭）` : '无线投屏：同一 WiFi 下手机/电脑打开网址即可投屏';
+  dom.btnCast.innerHTML = `<span class="ico"></span> ${castRunning ? '停止投屏' : '开启无线投屏'}`;
   Icons.set(dom.btnCast.querySelector('.ico'), castRunning ? 'stop' : 'cast', 13);
   dom.castBadge.textContent = castRunning ? '已开启 · 等待设备接入' : '未开启';
   dom.castBadge.classList.toggle('idle', !castRunning);
@@ -1263,8 +2160,26 @@ function renderCast(s) {
     dom.castUrl.textContent = s.url;
     drawCastQr(s.url);
   }
-  if (castRunning && s.inline) startInlineReceiver(s.url);
+  if (castRunning && s.inline) startInlineReceiver(s.url, s.token);
   if (!castRunning) stopInlineReceiver();
+}
+
+function drawRemoteQr(text) {
+  const canvas = dom.remoteQr;
+  const m = window.QRLite && window.QRLite.encode(text);
+  if (!m) { canvas.style.display = 'none'; return; }
+  canvas.style.display = 'block';
+  const q = 3, scale = 4, size = m.size;
+  canvas.width = canvas.height = (size + q * 2) * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#111111';
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      if (m.dark(r, c)) ctx.fillRect((c + q) * scale, (r + q) * scale, scale, scale);
+    }
+  }
 }
 
 function drawCastQr(text) {
@@ -1289,19 +2204,19 @@ function onCastStatus(event) {
   if (event === 'sender-found') {
     dom.castBadge.textContent = '设备已接入 · 建链中';
     dom.castBadge.classList.remove('idle');
-    toast('检测到设备发起同屏，正在建立连接…');
+    toast('检测到设备发起投屏，正在建立连接…');
   } else if (event === 'connected') {
-    dom.castBadge.textContent = '已连接 · 同屏播放中';
+    dom.castBadge.textContent = '已连接 · 投屏播放中';
     dom.castBadge.classList.remove('idle');
-    toast('设备已接入，同屏开始播放', 'ok');
+    toast('设备已接入，投屏开始', 'ok');
   } else if (event === 'port-busy') {
-    toast('同屏端口 18333 被占用，请先关闭占用该端口的程序', 'error');
+    toast('投屏端口 18333 被占用，请先关闭占用该端口的程序', 'error');
   }
 }
 
 // LED 模式：接收主进程告诉 inline 启动后，由面板直接在 ledVideo 上播放
 let inlineReceiver = null;
-function startInlineReceiver(url) {
+function startInlineReceiver(url, token) {
   if (!document.body.classList.contains('led-mode')) return;
   let port = 0;
   try { port = Number(new URL(url).port) || 0; } catch { }
@@ -1310,6 +2225,7 @@ function startInlineReceiver(url) {
   inlineReceiver = true;
   window.CastReceiver.start({
     port,
+    token: token || castToken || '',
     video: dom.ledVideo,
     onState: (s) => {
       if (s === 'playing') dom.ledIdle.hidden = true;
@@ -1547,13 +2463,28 @@ function renderTimer(s) {
   dom.tmDisplay.classList.toggle('warn', !!s.finished || (s.mode === 'countdown' && s.running && s.remaining <= 10000));
   const btn = dom.tmToggle;
   const [icon, text] = s.finished ? ['reset', '重置'] : s.running ? ['pause', '暂停'] : s.started ? ['play', '继续'] : ['play', '开始'];
-  btn.innerHTML = `<span class="ico"></span> ${text}`;
-  Icons.set(btn.querySelector('.ico'), icon, 13);
+  // 计时器每 250ms 一跳；无条件重建 innerHTML + SVG 会让整块面板持续重排（一节课全程）。
+  // 沿用 renderMusic/renderMode 已有的 dataset 去抖写法，仅在签名真变了才重写。
+  const sig = `${icon}|${text}`;
+  if (btn.dataset.ico !== sig) {
+    btn.dataset.ico = sig;
+    btn.innerHTML = `<span class="ico"></span> ${text}`;
+    Icons.set(btn.querySelector('.ico'), icon, 13);
+  }
 }
 
+// 倒计时提示音：复用同一个 AudioContext，播完主动 close()。
+// 原来每次 beep 都 new 一个且从不 close —— Chromium 硬件 AudioContext 上限约 6，
+// 一节课内反复用倒计时会累积到无声。
+let beepCtx = null;
 function beep(times = 3) {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!beepCtx || beepCtx.state === 'closed') beepCtx = new AC();
+    if (beepCtx.state === 'suspended') beepCtx.resume().catch(() => { });
+    const ctx = beepCtx;
+    const span = (times - 1) * 0.45 + 0.34;
     for (let i = 0; i < times; i++) {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = 880; o.type = 'sine';
@@ -1563,8 +2494,14 @@ function beep(times = 3) {
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
       o.start(t); o.stop(t + 0.34);
     }
+    clearTimeout(beepCloseTimer);
+    beepCloseTimer = setTimeout(() => {
+      beepCloseTimer = null; beepCtx = null;
+      try { ctx.close(); } catch { }
+    }, (span + 0.2) * 1000);
   } catch { }
 }
+let beepCloseTimer = null;
 
 /* ---------- 设置 ---------- */
 function syncConfigUI() {
@@ -1578,7 +2515,10 @@ function syncConfigUI() {
   dom.setDisplayMode.value = c.displayMode || 'control';
   dom.setRestore.checked = !!c.exitAction.restoreMusic;
   dom.setClosePp.checked = !!c.exitAction.closePowerpoint;
+  if (dom.setCompat) dom.setCompat.checked = !!c.compatMode;
   if (dom.setMiniAutoHide) dom.setMiniAutoHide.checked = c.miniAutoHide !== false;
+  if (dom.setAutoLaunch) dom.setAutoLaunch.checked = !!c.autoLaunch;
+  if (dom.setCastTrustCert) dom.setCastTrustCert.checked = c.castAutoTrustCert !== false;
 }
 
 function openSettings() { syncConfigUI(); renderHotkeys(); dom.settingsOverlay.hidden = false; }
@@ -1595,6 +2535,9 @@ async function saveSettings() {
     displayMode: dom.setDisplayMode.value,
     exitAction: { restoreMusic: dom.setRestore.checked, closePowerpoint: dom.setClosePp.checked },
     miniAutoHide: dom.setMiniAutoHide ? dom.setMiniAutoHide.checked : true,
+    compatMode: dom.setCompat ? dom.setCompat.checked : false,
+    autoLaunch: dom.setAutoLaunch ? dom.setAutoLaunch.checked : false,
+    castAutoTrustCert: dom.setCastTrustCert ? dom.setCastTrustCert.checked : true,
   };
   state.config = await window.api.invoke('config:save', patch);
   engine.crossfade = state.config.crossfadeSeconds;
@@ -1661,7 +2604,7 @@ function startCapture(action, el) {
     parts.push(key);
     const acc = parts.join('+');
     // 含修饰键 或 功能/具名键（F1-F12/Esc/`~`）才放行——否则全局钩子会吞掉普通字母键
-    const standaloneOK = /^(F[1-9]|F1[0-2]|Escape|Backquote|Grave|`)$/.test(key) || key === '~';
+    const standaloneOK = /^(F([1-9]|1[0-9]|2[0-4])|Escape|Backquote|Grave|`)$/.test(key) || key === '~';
     if (!standaloneOK && !['Control', 'Alt', 'Shift', 'Super'].some((m) => parts.includes(m))) {
       cleanup(); restore();
       toast(state.platform === 'darwin' ? '需含修饰键（⌘/⌥/⌃/⇧），或使用 F1-F12、Esc、~ 单键' : '需含修饰键（Ctrl/Alt/Shift），或使用 F1-F12、Esc、~ 单键', 'warn');
@@ -1677,7 +2620,14 @@ function startCapture(action, el) {
         el.textContent = dispAcc(acc);
         toast(`已设为 ${dispAcc(acc)}`, 'ok');
       }
-      else { restore(); toast(r.error === 'need-modifier' ? '快捷键需包含修饰键（Ctrl/Alt/Shift）' : '该组合被其他软件占用，已保留原键位', 'error'); }
+      else {
+        restore();
+        const msg = r.error === 'need-modifier' ? '快捷键需包含修饰键（Ctrl/Alt/Shift）'
+          : r.error === 'reserved' ? '该组合是系统保留快捷键（如复制/粘贴/关窗），请换一个'
+          : r.error === 'in-window-only' ? '该键只在本窗口内生效，不能设为全局快捷键，已保留原键位'
+          : '该组合被其他软件占用，已保留原键位';
+        toast(msg, 'error');
+      }
     });
     function cleanup() { window.removeEventListener('keydown', handler, true); el.classList.remove('capturing'); }
     function restore() { el.textContent = dispAcc(state.config.hotkeys[action] || ''); }
