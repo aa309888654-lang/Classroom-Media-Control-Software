@@ -19,6 +19,19 @@ extraResources:
       - "!**/.mimosa/**"   # GAP-08：resources 下同样剔除 .mimosa 缓存
 win:
   icon: resources/icon.png
+  # ---- 代码签名（未配置时照常构建，但产物未签名）----
+  # Win11 开着「智能应用控制」的机器会硬拦未签名程序，且没有“仍要运行”可点，
+  # 必须签名才能分发。首选零配置的环境变量方式，拿到证书后不用改本文件：
+  #   $env:CSC_LINK="C:\cert\code-sign.pfx"; $env:CSC_KEY_PASSWORD="…"; npm run dist
+  # 不想每次设环境变量时才解开下面这段（certificateFile 不存在会导致构建直接失败，
+  # 这是有意为之：宁可不发布，也不要悄悄产出一个未签名的包）：
+  # signtoolOptions:
+  #   certificateFile: certs/code-sign.pfx
+  #   certificatePassword: ${env.CSC_KEY_PASSWORD}
+  #   signingHashAlgorithms: [sha256]
+  #   timeStampServer: http://timestamp.digicert.com
+  # 微软云签名（beta）替代方案见《签名与发布指南.md》第三节
+  # 构建完务必跑 npm run dist:verify 复验（含 zip 内的 ffmpeg.exe）
   target:
     - target: nsis
       arch: [x64]

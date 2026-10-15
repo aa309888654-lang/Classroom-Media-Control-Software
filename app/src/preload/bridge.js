@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const INVOKE_CHANNELS = new Set([
   'app:getInit', 'app:quit', 'app:openExternal', 'app:copyText',
   'config:save',
-  'library:scan', 'library:deleteFile',
+  'library:scan', 'library:deleteFile', 'music:renameTrack',
   'displays:list', 'displays:extend',
   'office:detect',
   'ppt:openDialog', 'ppt:present', 'ppt:exit', 'ppt:status', 'ppt:next', 'ppt:prev', 'ppt:goto', 'ppt:preopen', 'ppt:exportAll',
@@ -23,7 +23,7 @@ const INVOKE_CHANNELS = new Set([
 ]);
 
 const EVENT_CHANNELS = new Set([
-  'hotkey', 'ppt:state', 'ppt:presenter', 'video:state', 'toast', 'displays:changed', 'video:load', 'video:control', 'video:windowmode', 'music:restore', 'timer:tick', 'timer:finished', 'cast:status', 'cast:state', 'welcome:state', 'import:progress', 'thumb:ready', 'ppt:pages', 'peer:list', 'peer:connected',
+  'hotkey', 'ppt:state', 'ppt:presenter', 'video:state', 'toast', 'displays:changed', 'video:load', 'video:control', 'video:windowmode', 'music:restore', 'timer:tick', 'timer:finished', 'cast:status', 'cast:state', 'welcome:state', 'import:progress', 'thumb:ready', 'ppt:pages', 'peer:list', 'peer:connected', 'window:alwaysOnTop',
 ]);
 
 contextBridge.exposeInMainWorld('api', {

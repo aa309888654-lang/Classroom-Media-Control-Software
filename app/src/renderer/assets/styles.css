@@ -224,6 +224,8 @@ body.media-splitting { cursor: col-resize; }
 [data-panel="video"] .card .video-chips { flex: 1; min-height: 140px; max-height: none; overflow-y: auto; align-content: flex-start; align-items: flex-start; }
 [data-panel="video"] .card-actions { margin-top: 11px; }
 .media-row.section-dragging { opacity: 0.55; outline: 1px dashed var(--accent-2); }
+/* 视频板块隐藏（顶栏「视频」按钮）：视频板与分隔条一并收起，音乐板独占整行 */
+body.video-hidden [data-panel="video"], body.video-hidden .media-splitter { display: none; }
 
 .panel-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; cursor: grab; user-select: none; }
 .panel-head:active { cursor: grabbing; }
@@ -406,6 +408,19 @@ body.section-drag-active .panel-head { cursor: grabbing; }
 .np-cat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 
 .np-controls { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+/* PPT 翻页组：与音乐控制同处播放条，放映时出现；左侧竖线区分两组操作 */
+.np-flip {
+  display: flex; align-items: center; gap: 6px;
+  padding-left: 11px; margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+.np-flip[hidden] { display: none; }
+.np-flip .np-flip-page {
+  min-width: 42px; text-align: center; font-size: 11px;
+  color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#btnPptPrevBar, #btnPptNextBar { color: var(--accent); border-color: rgba(38, 128, 235, 0.35); }
+#btnPptPrevBar:hover, #btnPptNextBar:hover { border-color: var(--accent); background: var(--accent-soft); }
 .icon-btn {
   width: 36px; height: 36px; border-radius: 9px; font-size: 13px;
   background: var(--card); border: 1px solid var(--border); color: var(--text);

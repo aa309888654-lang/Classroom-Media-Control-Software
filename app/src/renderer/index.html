@@ -21,6 +21,7 @@
       <button id="btnCastTop" class="chip" title="无线投屏：同一 WiFi 下，手机/电脑打开网址即可把屏幕投到投影屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 无线投屏</button>
       <button id="btnRemote" class="chip" title="无线遥控：同一 WiFi 下手机/电脑遥控本机；也可用本机遥控另一台电脑"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 遥控</button>
       <button id="btnTools" class="chip on" title="显示/隐藏课堂工具（计时器）"><span class="ico" data-ico="timer" data-ico-size="13"></span> 计时</button>
+      <button id="btnVideo" class="chip on" title="显示/隐藏视频板块"><span class="ico" data-ico="film" data-ico-size="13"></span> 视频</button>
       <button id="btnWelcome" class="chip" title="文字欢迎屏：上 LED 大屏显示欢迎语"><span class="ico" data-ico="party" data-ico-size="13"></span> 欢迎LED</button>
       <button id="btnMode" class="chip" title="切换模式：控制台 ↔ LED投屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 切到LED投屏</button>
       <button id="btnMini" class="chip" title="迷你模式：极小控制面板，拖到右下角自动隐藏，鼠标靠近浮现"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 迷你</button>
@@ -223,6 +224,12 @@
             <input id="vol" type="range" min="0" max="100" value="70" />
             <span id="volVal" class="mono vol-val">70%</span>
           </div>
+          <!-- PPT 翻页：和音乐控制同处一条，放映时才出现（原本埋在投屏卡里，来回够不着） -->
+          <div class="np-flip" id="npFlip" hidden>
+            <button id="btnPptPrevBar" class="icon-btn" data-hk="pptPrev" title="PPT 上一页 (Ctrl+Alt+←)"><span class="ico" data-ico="rewind" data-ico-size="15"></span></button>
+            <span class="mono np-flip-page" id="pptPageBar" title="当前页 / 总页数">—</span>
+            <button id="btnPptNextBar" class="icon-btn" data-hk="pptNext" title="PPT 下一页 (Ctrl+Alt+→)"><span class="ico" data-ico="forward" data-ico-size="15"></span></button>
+          </div>
           <button id="btnLoop" class="chip" title="循环模式（点击展开选择）">循环：列表 ▾</button>
         </div>
         <div class="np-bottom">
@@ -340,6 +347,11 @@
           <label>退出放映时</label>
           <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setClosePp" /><i></i></label>
             <span class="form-tip" id="pptCloseTip">同时关闭 PowerPoint/WPS 程序</span></div>
+        </div>
+        <div class="form-row">
+          <label>放映时置顶面板</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setAutoTop" checked /><i></i></label>
+            <span class="form-tip">开始放映 PPT 时<strong>自动把面板置顶</strong>，避免被 PPT 放映窗口盖住点不到按钮；结束放映后自动还原成你原来的置顶状态</span></div>
         </div>
         <div class="form-row">
           <label>快捷键</label>
@@ -521,6 +533,21 @@
 
   <div id="toasts" class="toasts"></div>
   <div id="osd" class="osd mono" hidden></div>
+
+  <!-- 重命名歌曲（右键曲目行打开；只支持用户曲库里的自定义歌曲） -->
+  <div class="overlay" id="renameOverlay" hidden>
+    <div class="modal" style="width:420px">
+      <div class="modal-head"><h3><span class="ico" data-ico="music" data-ico-size="14"></span> 重命名歌曲</h3></div>
+      <div class="modal-body">
+        <input id="renameInput" class="cat-input" maxlength="80" placeholder="新的歌曲名称" />
+        <p class="form-tip" id="renameTip">扩展名保持不变；只支持你自己曲库文件夹里的歌曲，内置音乐不能改</p>
+      </div>
+      <div class="modal-foot">
+        <button id="btnRenameCancel" class="btn">取消</button>
+        <button id="btnRenameOk" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 通用确认弹层（删除分类等） -->
   <div class="overlay" id="confirmOverlay" hidden>

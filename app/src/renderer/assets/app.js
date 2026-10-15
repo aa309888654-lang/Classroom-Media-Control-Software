@@ -95,6 +95,7 @@ async function init() {
   // 兼容模式（老旧电脑关 GPU 加速后重启生效）：渲染层同步挂类，CSS 据此去掉毛玻璃/重阴影/持续动画
   document.body.classList.toggle('compat-mode', !!state.config.compatMode);
   applyToolsVisibility(); // 顶栏「工具」按钮记忆的课堂工具显隐
+  applyVideoVisibility(); // 顶栏「视频」按钮记忆的视频板块显隐
   // 迷你模式记忆：上次关机时若在迷你模式，直接以迷你面板启动（LED 模式优先，互斥）
   if (state.config.miniMode && state.config.displayMode !== 'led') {
     document.body.classList.add('mini-mode');
@@ -167,6 +168,11 @@ function subscribe() {
   window.api.on('ppt:state', (s) => {
     state.ppt = { ...state.ppt, ...s }; renderPptState(); renderMode();
     // 放映时的悬浮控制改由主进程的 floatBar（无边框半透明浮条）承担，面板不再自动变形
+  });
+  // 放映自动置顶：主进程临时打开/还原置顶，面板「置顶」按钮跟着点亮/熄灭，避免看着没置顶其实置了
+  window.api.on('window:alwaysOnTop', ({ alwaysOnTop: on }) => {
+    dom.btnPin.classList.toggle('on', !!on);
+    dom.btnPin.title = on ? '取消窗口置顶' : '窗口置顶（放映 PPT 时会自动置顶，结束放映后还原）';
   });
   window.api.on('video:state', (v) => {
     state.video = v;
@@ -597,7 +603,9 @@ function renderTrackList() {
     delEl.title = '从曲库删除（移入回收站）';
     delEl.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('music', f, fileName(f)); };
     row.appendChild(delEl);
-    row.title = `${fileName(f)}\n双击播放（单击不播放，避免误触）`;
+    row.title = `${fileName(f)}\n双击播放（单击不播放，避免误触）\n右键可改歌曲名称`;
+    // 右键改名：只对用户曲库里的自定义歌曲开放，内置曲库直接说明原因（主进程也会再挡一次）
+    row.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); openRenameTrack(f); };
     // 单击只浏览不播放（触屏/单击误触不再抢播）；双击才点播这一首
     row.ondblclick = (e) => { e.stopPropagation(); engine.playTrack(cat.category, idx); };
     bindTrackDrag(row, cat, idx); // 曲目行长按/竖拖排序
@@ -963,6 +971,55 @@ function confirmDeleteFile(kind, file, name) {
   };
 }
 
+/* ---------- 重命名歌曲（右键曲目行） ---------- */
+const RENAME_ERR_TEXT = {
+  builtin: '内置音乐不能改名（内置曲库在安装目录，改了也会被重装覆盖）',
+  'not-found': '文件已不存在（可能刚被移走）',
+  exists: '同一文件夹里已经有这个名字了',
+  busy: '文件正被占用（可能正在播放），稍后再试一次',
+  'bad-name': '名称里不能有 \\ / : * ? " < > | 这些字符',
+  'reserved-name': '这是 Windows 保留名，换一个吧',
+  'too-long': '名字太长了（最多 80 字）',
+  empty: '名字不能为空',
+  io: '改名失败：文件被占用或没有写入权限',
+};
+let renameTarget = ''; // 待改名的曲目完整路径
+// 是不是用户自己曲库里的文件：路径在音乐文件夹下才算（大小写不敏感，Windows 语义）
+function isUserTrack(file) {
+  const root = String(state.config.musicDir || '');
+  if (!root) return false;
+  const norm = (p) => String(p).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+  return norm(file).startsWith(norm(root) + '\\');
+}
+function openRenameTrack(file) {
+  if (!isUserTrack(file)) { toast(RENAME_ERR_TEXT.builtin, 'warn'); return; }
+  renameTarget = file;
+  const cur = fileName(file).replace(/\.[^.]+$/, '');
+  dom.renameInput.value = cur;
+  dom.renameTip.textContent = `当前：${cur}　·　扩展名 ${fileName(file).match(/\.[^.]+$/)?.[0] || ''} 保持不变`;
+  dom.renameOverlay.hidden = false;
+  dom.renameInput.focus();
+  dom.renameInput.select();
+}
+function closeRename() { dom.renameOverlay.hidden = true; renameTarget = ''; }
+async function submitRename() {
+  const file = renameTarget;
+  const name = dom.renameInput.value;
+  if (!file) { closeRename(); return; }
+  if (!name.trim()) { toast(RENAME_ERR_TEXT.empty, 'warn'); dom.renameInput.focus(); return; }
+  const r = await window.api.invoke('music:renameTrack', { file, name });
+  if (!r || !r.ok) {
+    const err = (r && r.error) || 'io';
+    toast(`改名失败：${RENAME_ERR_TEXT[err] || err}`, 'error');
+    return; // 弹层不关，让老师改了再试
+  }
+  closeRename();
+  state.music = r.music;
+  applyCatOrder(); applyPinned(); engine.setCategories(state.music);
+  renderCategories();
+  toast(`已改名为「${r.name.replace(/\.[^.]+$/, '')}」`, 'ok');
+}
+
 function confirmDeleteCategory(name) {
   dom.confirmTitle.textContent = '删除分类';
   dom.confirmText.textContent = `删除分类「${name}」？对应文件夹将移入回收站（误删可从回收站找回）。`;
@@ -1191,6 +1248,12 @@ const MEDIA_STACK_MQ = window.matchMedia('(max-width: 960px)');
 function applyMediaSplit() {
   const row = document.querySelector('.media-row');
   if (!row) return;
+  // 视频板块隐藏时不分栏：音乐板独占整行（列/行模板是内联字面量，这里必须显式收敛）
+  if (state.config.videoVisible === false) {
+    row.style.gridTemplateColumns = '1fr';
+    row.style.gridTemplateRows = '';
+    return;
+  }
   // Chromium 的 minmax() 内不能用 var()，网格模板由 JS 写内联字面量
   if (MEDIA_STACK_MQ.matches) {
     const vh = Math.round(Number(state.config.mediaSplitV) > 0 ? Number(state.config.mediaSplitV) : 300);
@@ -1256,6 +1319,19 @@ function applyToolsVisibility() {
   dom.btnTools.title = visible ? '隐藏课堂工具（计时器）' : '显示课堂工具（计时器）';
 }
 
+/* ---------- 视频板块显隐（顶栏「视频」按钮，记忆到配置） ----------
+ * 隐藏时视频板与音视频分隔条一并收起，音乐板独占整行。栅格列/行统一由 applyMediaSplit 写，
+ * 这里只负责挂 body 类 + 重算比例，避免两处各写一套布局规则互相覆盖。 */
+function applyVideoVisibility() {
+  const visible = state.config.videoVisible !== false; // 缺省显示
+  document.body.classList.toggle('video-hidden', !visible);
+  applyMediaSplit(); // 隐藏时收敛为单列，恢复时回到并列/堆叠比例
+  if (dom.btnVideo) {
+    dom.btnVideo.classList.toggle('on', visible);
+    dom.btnVideo.title = visible ? '隐藏视频板块' : '显示视频板块';
+  }
+}
+
 /* ---------- 投屏 ---------- */
 let lastPreopenPpt = ''; // 已触发预打开的课件
 function renderPptState() {
@@ -1282,6 +1358,8 @@ function renderPptState() {
   dom.btnExitPresent.hidden = !(p.presenting || p.loading);
   dom.btnExitPresent.disabled = !p.presenting && !p.loading;
   dom.pptFlipRow.style.display = p.presenting ? 'flex' : 'none';
+  // 播放条里的 PPT 翻页组：和音乐控制并排，演练时手不用离开底部控制区
+  if (dom.npFlip) dom.npFlip.hidden = !p.presenting;
   if (!p.presenting) { dom.presenterStrip.style.display = 'none'; state.pptPage = null; state.pptPages = null; }
   // LED 面板 PPT 按钮同步
   dom.ledPptPresent.textContent = p.presenting ? '✕' : '▶';
@@ -1300,6 +1378,7 @@ function renderPresenter(s) {
   syncMiniStatus(); // 迷你条同步显示页码
   dom.presenterStrip.style.display = 'flex';
   dom.pptPageInfo.textContent = `第 ${s.position} / ${s.total} 页`;
+  if (dom.pptPageBar) dom.pptPageBar.textContent = `${s.position}/${s.total}`;
   // 5 页胶片：主进程翻页即时回报没带 pages 时沿用上一批，仅更新当前页高亮
   if (Array.isArray(s.pages) && s.pages.length) state.pptPages = s.pages;
   renderPptFilm(s.position);
@@ -1687,6 +1766,15 @@ function bindUI() {
     applyToolsVisibility();
   };
 
+  // 顶栏「视频」：显示/隐藏整个视频板块（隐藏后音乐板占满整行）
+  dom.btnVideo.onclick = () => {
+    state.config.videoVisible = state.config.videoVisible === false; // false→true / 其他→false
+    const on = state.config.videoVisible !== false;
+    window.api.invoke('config:save', { videoVisible: on });
+    applyVideoVisibility();
+    toast(on ? '视频板块已显示' : '视频板块已隐藏，点顶栏「视频」恢复', 'info');
+  };
+
   // 音乐管理模式开关：点亮后各分类出现「＋」添加、曲目/分类的 ✕ 删除常显、可长按拖动排序
   dom.btnAddMode.onclick = () => {
     state.addMode = !state.addMode;
@@ -1801,6 +1889,7 @@ function bindUI() {
     }
     if (e.key !== 'Escape') return;
     if (loopMenuEl) { closeLoopMenu(); return; }
+    if (!dom.renameOverlay.hidden) { closeRename(); return; }
     if (!dom.confirmOverlay.hidden) { dom.confirmOverlay.hidden = true; confirmCb = null; return; }
     if (!dom.castOverlay.hidden) { dom.castOverlay.hidden = true; return; }
     if (!dom.remoteOverlay.hidden) { dom.remoteOverlay.hidden = true; return; }
@@ -1821,9 +1910,22 @@ function bindUI() {
   dom.btnConfirmCancel.onclick = () => { dom.confirmOverlay.hidden = true; confirmCb = null; };
   dom.confirmOverlay.onclick = (e) => { if (e.target.id === 'confirmOverlay') { dom.confirmOverlay.hidden = true; confirmCb = null; } };
 
+  // 重命名弹层：Enter 保存 / Esc 或点遮罩取消
+  dom.btnRenameOk.onclick = () => { submitRename(); };
+  dom.btnRenameCancel.onclick = () => { closeRename(); };
+  dom.renameOverlay.onclick = (e) => { if (e.target.id === 'renameOverlay') closeRename(); };
+  dom.renameInput.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') submitRename();
+    else if (e.key === 'Escape') closeRename();
+  };
+
   // PPT 翻页
   dom.btnPptNext.onclick = () => window.api.invoke('ppt:next');
   dom.btnPptPrev.onclick = () => window.api.invoke('ppt:prev');
+  // 播放条里的翻页键复用同一套动作，避免两处逻辑分叉
+  if (dom.btnPptNextBar) dom.btnPptNextBar.onclick = () => dom.btnPptNext.click();
+  if (dom.btnPptPrevBar) dom.btnPptPrevBar.onclick = () => dom.btnPptPrev.click();
 
   // 课堂工具
   tmBind();
@@ -2519,6 +2621,7 @@ function syncConfigUI() {
   if (dom.setMiniAutoHide) dom.setMiniAutoHide.checked = c.miniAutoHide !== false;
   if (dom.setAutoLaunch) dom.setAutoLaunch.checked = !!c.autoLaunch;
   if (dom.setCastTrustCert) dom.setCastTrustCert.checked = c.castAutoTrustCert !== false;
+  if (dom.setAutoTop) dom.setAutoTop.checked = !(c.display && c.display.autoTopOnPresent === false);
 }
 
 function openSettings() { syncConfigUI(); renderHotkeys(); dom.settingsOverlay.hidden = false; }
@@ -2538,6 +2641,8 @@ async function saveSettings() {
     compatMode: dom.setCompat ? dom.setCompat.checked : false,
     autoLaunch: dom.setAutoLaunch ? dom.setAutoLaunch.checked : false,
     castAutoTrustCert: dom.setCastTrustCert ? dom.setCastTrustCert.checked : true,
+    // display 是对象：config:save 走深合并，只补 autoTopOnPresent，不动 teacherScreenIndex 等既有项
+    display: { autoTopOnPresent: dom.setAutoTop ? dom.setAutoTop.checked : true },
   };
   state.config = await window.api.invoke('config:save', patch);
   engine.crossfade = state.config.crossfadeSeconds;

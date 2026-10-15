@@ -118,6 +118,32 @@ function assertAlwaysOnTop(force = false) {
   } catch { }
 }
 
+// 放映期间自动置顶：PPT 一开始放映，全屏放映窗/PPT 主窗口就会盖住面板；
+// 双屏「扩展模式」下更明显——放映落在副屏，可 PowerPoint 主窗口仍可能压在教师屏的面板上，
+// 老师就没法点退出/翻页了。默认在「开始放映」时自动打开置顶，「结束放映」后还原成用户原来的手动状态，
+// 不会留下「莫名其妙一直置顶」。设置里 display.autoTopOnPresent 可关。
+let autoTopApplied = false; // 置顶是否由「放映自动置顶」临时打开（待还原）
+function applyAutoTopOnPresent(on) {
+  const disp = config.get().display || {};
+  if (disp.autoTopOnPresent === false) return; // 用户关掉了这项
+  if (on) {
+    if (alwaysOnTop) return; // 用户本来就开着置顶，别当成临时状态，退出时也别去动它
+    autoTopApplied = true;
+    alwaysOnTop = true;
+  } else {
+    if (!autoTopApplied) return; // 不是我们临时开的（或用户中途自己动过），不动
+    autoTopApplied = false;
+    alwaysOnTop = false;
+  }
+  if (win && !win.isDestroyed()) {
+    try {
+      win.setAlwaysOnTop(alwaysOnTop, 'screen-saver');
+      if (alwaysOnTop) assertAlwaysOnTop();
+    } catch { }
+  }
+  broadcast('window:alwaysOnTop', { alwaysOnTop, auto: autoTopApplied }); // 面板置顶按钮同步点亮/熄灭
+}
+
 // 同屏彻底收场的**唯一出口**。
 // 历史上这里有三条各自为政的清理路径（面板停止 / ESC 关窗 / 拔掉投影线），每条都漏了不同的一步：
 //   · ESC 关窗漏了 peer.stopBeacon() → UDP 信标每 2s 继续广播主机名，本机永久出现在别人设备列表里；
@@ -335,6 +361,7 @@ async function handleShowGone() {
   pptLastBroadcast = '';
   sm.mode = 'idle';
   floatBar.close(); // 老师手动退了放映：悬浮条一并收掉
+  applyAutoTopOnPresent(false); // 同上：自动置顶也要还原
   broadcast('ppt:state', { presenting: false, file: '', loading: false });
 }
 
@@ -426,6 +453,8 @@ async function presentPpt(file) {
   sm.mode = result.ok ? 'ppt' : 'idle';
   broadcast('ppt:state', { presenting: result.ok, file, loading: false, error: result.ok ? null : result.error });
   if (!result.ok) toast(`放映失败：${PPT_ERRORS[result.error] || result.error}`, 'error');
+  // 先自动置顶（老师不手动开也要挡住 PPT 窗口），下面的补救重断言才有效
+  if (result.ok) applyAutoTopOnPresent(true);
   // 置顶开着时，PPT 全屏窗口弹出会把面板盖掉；分几次把面板重新压回顶层
   if (result.ok && alwaysOnTop) {
     [800, 2000, 4000].forEach((ms) => setTimeout(() => assertAlwaysOnTop(true), ms)); // force：关键时刻不听节流
@@ -444,6 +473,7 @@ async function presentPpt(file) {
 async function exitPresent() {
   presentSeq++; // 使进行中的放映结果失效
   floatBar.close(); // 收悬浮控制条
+  applyAutoTopOnPresent(false); // 放映结束，还原老师原来的置顶状态
   const cfg = config.get();
   const res = await pptController.exitPresent(cfg.exitAction.closePowerpoint);
   sm.mode = 'idle';
@@ -736,6 +766,42 @@ function registerIpc() {
       }
       return { ok: false, error: String(err) };
     }
+  });
+
+  // 重命名曲目（右键曲目行调用）：只允许改**用户音乐库**里的文件。
+  // 内置曲库在安装目录（Program Files），改名要么没权限、要么下次重装/升级就被覆盖回来，因此一律拒绝。
+  ipcMain.handle('music:renameTrack', async (_e, { file, name }) => {
+    const cfg = config.get();
+    const root = cfg.musicDir ? path.resolve(cfg.musicDir) : '';
+    if (!root || !file) return { ok: false, error: 'bad-args' };
+    const target = path.resolve(String(file));
+    if (!withinRoot(target, root)) return { ok: false, error: 'builtin' }; // 内置曲库不给改
+    if (!fs.existsSync(target)) return { ok: false, error: 'not-found' };
+    const ext = path.extname(target);
+    // 顺手滤掉 Windows 文件名非法字符，省得老师改完发现没生效还看不懂
+    let base = String(name == null ? '' : name).replace(/[\\/:*?"<>|]/g, '').trim().replace(/\.+$/, '');
+    // 老师可能连扩展名一起输（"神曲.mp3"），否则会变成 "神曲.mp3.mp3"
+    if (ext && base.toLowerCase().endsWith(ext.toLowerCase())) base = base.slice(0, -ext.length).trim();
+    if (!base) return { ok: false, error: 'empty' };
+    if (base.length > 80) return { ok: false, error: 'too-long' };
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base)) return { ok: false, error: 'reserved-name' }; // Windows 保留设备名
+    const dest = path.join(path.dirname(target), base + ext);
+    const fresh = async () => ({ ok: true, name: path.basename(dest), file: dest, music: await library.scanMusic() });
+    if (dest.toUpperCase() === target.toUpperCase()) return fresh(); // 没改，直接当成功
+    if (fs.existsSync(dest)) return { ok: false, error: 'exists' };
+    try {
+      fs.renameSync(target, dest);
+    } catch (err) {
+      return { ok: false, error: err && err.code === 'EBUSY' ? 'busy' : 'io' };
+    }
+    // 手工排序里记的是完整路径，不跟着换的话这首的排序会失效（回落到 mtime 序）
+    const cat = path.basename(path.dirname(dest));
+    const order = cfg.catTrackOrder || {};
+    if (Array.isArray(order[cat])) {
+      order[cat] = order[cat].map((x) => (path.resolve(x).toUpperCase() === dest.toUpperCase() ? dest : x));
+      config.save({ catTrackOrder: order });
+    }
+    return fresh();
   });
 
   // 自定义音乐分类：添加（建文件夹）/ 删除（文件夹入回收站，可找回）
@@ -1083,6 +1149,7 @@ const pushPages = (done) => {
 
   ipcMain.handle('window:toggleAlwaysOnTop', () => {
     alwaysOnTop = !alwaysOnTop;
+    autoTopApplied = false; // 老师自己动过置顶：不再由「放映自动置顶」负责还原
     win.setAlwaysOnTop(alwaysOnTop, 'screen-saver');
     if (alwaysOnTop) assertAlwaysOnTop();
     return { alwaysOnTop };

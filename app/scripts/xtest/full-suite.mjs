@@ -4,10 +4,21 @@
  * 注意：曲目行是「双击播放」的有意设计（避免误触），测试必须用双击。
  */
 import { attach, sleep, makeChecker } from './cdp.mjs';
+import { readFileSync } from 'node:fs';
+// 版本断言跟 package.json 走：写死版本号会让每次发版都假失败（2026.10.15 起改为动态比对）
+const EXPECTED_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 const t = await attach(9235);
 const { ev, invoke, realClick, doubleClick, centerOf } = t;
 const c = makeChecker('小天AIGC 全面功能测试');
+
+/** 轮询等待某个状态成立，替代固定 sleep：
+ *  主进程 → 渲染层的往返耗时随机器负载起伏，固定等待会在慢机上假失败。 */
+const waitFor = async (fn, ms = 4000, step = 100) => {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(step); }
+  return false;
+};
 
 /* 页面内注入安全的状态读取器（避免声道为 null 时整段求值崩掉） */
 await ev(`window.__xt = {
@@ -84,7 +95,7 @@ await phase('A 初始化', async () => {
   c.check('A6 app:getInit 负载完整',
     !!cfgBefore.config && !!cfgBefore.music && Array.isArray(cfgBefore.videos) && Array.isArray(cfgBefore.ppts),
     `video=${cfgBefore.videos.length} ppt=${cfgBefore.ppts.length} music=${cfgBefore.music.length}`);
-  c.check('A7 版本号=2026.10.11', cfgBefore.version === '2026.10.11', cfgBefore.version);
+  c.check(`A7 版本号=${EXPECTED_VERSION}`, cfgBefore.version === EXPECTED_VERSION, cfgBefore.version);
   c.check('A8 品牌名正常', cfgBefore.brand && cfgBefore.brand.name === '小天AIGC', String(cfgBefore.brand && cfgBefore.brand.name));
 });
 
@@ -229,7 +240,8 @@ await phase('D 播放冲突', async () => {
       c.check('D7 分类「播放全部」入口同样被拦', (await eng()).playing === false);
     }
 
-    await stopVideo(); await sleep(600);
+    await stopVideo();
+    await waitFor(async () => (await eng()).playing === true);
     c.check('D8 停止视频后音乐自动恢复', (await eng()).playing === true, JSON.stringify(await eng()));
   }
 });
@@ -245,7 +257,8 @@ await phase('E 视频', async () => {
     c.check('E2 窗口/全屏互切', wt.ok === true && typeof wt.windowed === 'boolean', JSON.stringify(wt));
     await invoke('video:windowToggle'); await sleep(400);
 
-    await invoke('video:control', 'stop'); await sleep(600);
+    await invoke('video:control', 'stop');
+    await waitFor(async () => { const a = await invoke('app:getInit'); return a.video && a.video.playing === false; });
     const after = await invoke('app:getInit');
     c.check('E3 LED 停止键状态同步修复：video.playing 复位',
       after.video && after.video.playing === false, JSON.stringify(after.video));
