@@ -1,0 +1,39 @@
+# 单元测试 + 集成测试（GAP-01）：每次推送/PR 在 Windows runner 上跑 node --test
+# 覆盖：config/hotkeys/library/transcode/thumbs/pptServer/castServer（31 个用例）
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: 安装依赖
+        working-directory: app
+        run: npm ci || npm install
+
+      - name: 语法检查（全部 JS）
+        working-directory: app
+        shell: pwsh
+        run: |
+          $fail = 0
+          Get-ChildItem -Path src -Recurse -Filter *.js | Where-Object { $_.FullName -notmatch 'vendor' } | ForEach-Object {
+            node --check $_.FullName 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Output "SYNTAX FAIL $($_.FullName)"; $fail = 1 }
+          }
+          if ($fail -ne 0) { exit 1 }
+
+      - name: 单元 + 集成测试
+        working-directory: app
+        run: npm test
