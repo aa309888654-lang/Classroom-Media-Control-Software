@@ -26,15 +26,26 @@ function projectionDisplay() {
 
 // 供主进程下发给 PowerShell：把放映窗口搬到目标屏时需要「点 ↔ 像素」比例校准，
 // 而校准必须以「某块屏的像素矩形」为基准，所以整块列表都传过去
+//
+// 【混合 DPI 关键】Electron 的 bounds 是 DIP，虚拟桌面里的 x/y 偏移按「主屏的缩放」换算，
+// 而 w/h 按「该屏自己的缩放」换算。于是 4K@150% 与 2K@100% 两块屏的 DIP 尺寸会完全相同
+// （都是 2560×1440），仅凭 DIP 无法区分、也无法和 PowerPoint 的坐标对齐。
+// 所以这里额外给出物理像素矩形 px*：x/y 乘主屏缩放，w/h 乘各自缩放。
 function displayTable() {
   const primary = screen.getPrimaryDisplay();
-  return screen.getAllDisplays().map((d) => ({
-    id: d.id,
-    x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height,
-    scale: d.scaleFactor || 1,
-    internal: !!d.internal,
-    primary: d.id === primary.id,
-  }));
+  const pScale = primary.scaleFactor || 1;
+  return screen.getAllDisplays().map((d) => {
+    const s = d.scaleFactor || 1;
+    return {
+      id: d.id,
+      x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height,
+      pxX: Math.round(d.bounds.x * pScale), pxY: Math.round(d.bounds.y * pScale),
+      pxW: Math.round(d.bounds.width * s), pxH: Math.round(d.bounds.height * s),
+      scale: s,
+      internal: !!d.internal,
+      primary: d.id === primary.id,
+    };
+  });
 }
 
 function targetIndex() {

@@ -16,6 +16,112 @@ $ErrorActionPreference = 'Stop'
 # （表现为 Test-Path 找不到文件 → 放映/缩略图失败）。一次性模式参数走命令行 Unicode 不受影响。
 try { [Console]::InputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
+# ── Win32 / DPI 辅助 ────────────────────────────────────────────────────────
+# 全屏放映时 SlideShowWindow 的 Left/Top/Width/Height 设了不生效（宽高报的是「幻灯片
+# 尺寸」1280x720 这种固定值，不是窗口尺寸；窗口落哪块屏由 PowerPoint 自己托管）。
+# 唯一可靠的办法是用 Win32 把真实窗口（class=screenClass）搬到目标屏的物理矩形，
+# 再让 PowerPoint 重新进全屏——此时它认的是窗口当前所在的那块屏。
+#
+# DPI 感知必须在进程调用任何窗口 API 之前声明，否则 GetMonitorInfo / GetWindowRect
+# 拿到的是被系统按主屏 DPI 虚拟化过的坐标（4K 主屏被报成 2560x1440、副屏 x 偏移失真）。
+# 常驻 -server 模式是长驻进程，所以放在文件最前面。
+$script:WinOk = $false
+try {
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class XtWin {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public int dwFlags; }
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="FindWindowExW")] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string name);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="GetClassNameW")] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, int f);
+  [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO mi);
+}
+'@
+  # PER_MONITOR_AWARE_V2 = -4；旧系统退到 SetProcessDPIAware（SYSTEM_DPI_AWARE）
+  try { [void][XtWin]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch { try { [void][XtWin]::SetProcessDPIAware() } catch { } }
+  $script:WinOk = $true
+} catch { }
+
+# 找出放映窗口句柄：PowerPoint 放映窗口的窗口类固定是 screenClass。
+# 实测一台机器上会同时存在两个 screenClass（真正放映的那个 + 一个 1706x960 的辅助窗），
+# 所以取「可见且面积最大」的那个。
+# 枚举走 EnumWindows：FindWindowEx 的顺链枚举在这台机器上实测匹配不到放映窗口
+# （能枚举到但返回 Zero），EnumWindows 则稳定命中，所以它是主路径，FindWindowEx 留作兜底。
+function Get-ShowHwnd {
+  if (-not $script:WinOk) { return [IntPtr]::Zero }
+  $best = [IntPtr]::Zero
+  $bestArea = 0.0
+
+  try {
+    $list = New-Object System.Collections.ArrayList
+    $cb = [XtWin+EnumProc]{
+      param([IntPtr]$h, [IntPtr]$l)
+      try {
+        $sb = New-Object System.Text.StringBuilder 256
+        [void][XtWin]::GetClassName($h, $sb, 256)
+        if ($sb.ToString() -eq 'screenClass' -and [XtWin]::IsWindowVisible($h)) {
+          $r = New-Object XtWin+RECT
+          if ([XtWin]::GetWindowRect($h, [ref]$r)) {
+            [void]$list.Add([pscustomobject]@{
+              h = $h; a = [double]($r.R - $r.L) * [double]($r.B - $r.T)
+            })
+          }
+        }
+      } catch { }
+      return $true
+    }
+    [void][XtWin]::EnumWindows($cb, [IntPtr]::Zero)
+    # 用 `-gt` 而不是 `-ge`：面积相同时保留先枚举到的那个。EnumWindows 按 Z 序自上而下，
+    # 真正的放映窗在最上层，实测「窗口等大」时会同时命中放映窗与它拖出的副屏克隆窗，
+    # 取靠前的（上层那个）才是对的。
+    foreach ($w in $list) { if ($w.a -gt $bestArea) { $bestArea = $w.a; $best = $w.h } }
+  } catch { }
+
+  if ($best -ne [IntPtr]::Zero) { return $best }
+
+  # 兜底：FindWindowEx 顺链
+  $prev = [IntPtr]::Zero
+  for ($i = 0; $i -lt 16; $i++) {
+    $h = [XtWin]::FindWindowEx([IntPtr]::Zero, $prev, 'screenClass', $null)
+    if ($h -eq [IntPtr]::Zero) { break }
+    if ([XtWin]::IsWindowVisible($h)) {
+      $r = New-Object XtWin+RECT
+      if ([XtWin]::GetWindowRect($h, [ref]$r)) {
+        $a = [double]($r.R - $r.L) * [double]($r.B - $r.T)
+        if ($a -gt $bestArea) { $bestArea = $a; $best = $h }
+      }
+    }
+    $prev = $h
+  }
+  return $best
+}
+
+# 问系统「这个窗口现在落在哪块屏上」，直接拿该屏的物理矩形（不含工作区裁剪）。
+# 这一步取代了旧版「按宽高比最接近反推源屏」——混合 DPI 下必然认错。
+function Get-MonitorRectPx([IntPtr]$hwnd) {
+  if (-not $script:WinOk) { return $null }
+  $m = [XtWin]::MonitorFromWindow($hwnd, 2)   # MONITOR_DEFAULTTONEAREST
+  if ($m -eq [IntPtr]::Zero) { return $null }
+  $mi = New-Object XtWin+MONITORINFO
+  $mi.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type]'XtWin+MONITORINFO')
+  if (-not [XtWin]::GetMonitorInfo($m, [ref]$mi)) { return $null }
+  return [pscustomobject]@{
+    x = [double]$mi.rcMonitor.L
+    y = [double]$mi.rcMonitor.T
+    w = [double]($mi.rcMonitor.R - $mi.rcMonitor.L)
+    h = [double]($mi.rcMonitor.B - $mi.rcMonitor.T)
+  }
+}
+
 $candidates = @($ProgId, 'PowerPoint.Application', 'KWPP.Application', 'Kwpp.Application') |
   Where-Object { $_ } | Select-Object -Unique
 
@@ -39,14 +145,30 @@ function Get-RunningApp {
     }
   }
   foreach ($id in $candidates) {
-    try {
-      $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject($id)
-      if ($app) {
-        $script:CachedApp = $app
-        $script:CachedId = $id
-        return @{ App = $app; ProgId = $id }
-      }
-    } catch { }
+    $app = $null
+    try { $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject($id) } catch { $app = $null }
+    if (-not $app) { continue }
+
+    # 取到了代理不等于它还活着：PowerPoint 崩掉/被结束后，ROT 里会短暂残留一个
+    # 「已断开」的代理，GetActiveObject 正常返回，直到真正调方法才抛
+    # RPC_E_DISCONNECTED (0x80010108)。不校验就直接返回，后面每个动作都会 com-error，
+    # 且永远自愈不了（一次性模式下没有 CachedApp 缓存可清）。
+    # 这里做一次最轻量的往返校验；坏的就等它从 ROT 摘掉再取一次。
+    $alive = $false
+    try { $null = $app.Version; $alive = $true } catch { }
+    if (-not $alive) {
+      Start-Sleep -Milliseconds 400
+      try {
+        $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject($id)
+        $null = $app.Version
+        $alive = $true
+      } catch { $app = $null; $alive = $false }
+    }
+    if ($alive) {
+      $script:CachedApp = $app
+      $script:CachedId = $id
+      return @{ App = $app; ProgId = $id }
+    }
   }
   return $null
 }
@@ -66,37 +188,123 @@ function Get-NotesText($pres, [int]$page) {
   return $txt
 }
 
+# Win32 搬运：把放映窗口 HWND 移到目标屏的物理矩形。
+# 步骤固定为「退全屏 → SetWindowPos → 回读校验 → 再进全屏」。
+# 最后一步是整套方案成立的关键：PowerPoint 自己决定全屏落屏，但它依据的是窗口
+# 当前的位置，所以我们只要在退出全屏期间把窗口挪到目标屏，它就会跟着过去。
+function Move-ShowWindowWin32($sw, [double]$tPxX, [double]$tPxY, [double]$tPxW, [double]$tPxH, [bool]$wasFull) {
+  $hwnd = Get-ShowHwnd
+  if ($hwnd -eq [IntPtr]::Zero) {
+    return @{ ok = $false; reason = 'hwnd-not-found'; x = 0; y = 0; w = 0; h = 0; ratio = 0 }
+  }
+
+  $src = Get-MonitorRectPx $hwnd
+  if (-not $src) {
+    return @{ ok = $false; reason = 'no-src-monitor'; x = 0; y = 0; w = 0; h = 0; ratio = 0; hwnd = $hwnd.ToInt64() }
+  }
+  $cur = New-Object XtWin+RECT
+  if (-not [XtWin]::GetWindowRect($hwnd, [ref]$cur)) {
+    return @{ ok = $false; reason = 'no-window-rect'; x = 0; y = 0; w = 0; h = 0; ratio = 0; hwnd = $hwnd.ToInt64() }
+  }
+  $cw = [double]($cur.R - $cur.L); $ch = [double]($cur.B - $cur.T)
+  if ($cw -le 0 -or $ch -le 0 -or $src.w -le 0 -or $src.h -le 0) {
+    return @{ ok = $false; reason = 'no-window-size'; x = 0; y = 0; w = 0; h = 0; ratio = 0; hwnd = $hwnd.ToInt64() }
+  }
+
+  # 比例 = 窗口当前物理尺寸 ÷ 它所在屏的物理尺寸。两边都是物理像素，不受 DPI 影响。
+  $kx = $cw / $src.w
+  $ky = $ch / $src.h
+  $nx = [int][Math]::Round($tPxX * $kx); $ny = [int][Math]::Round($tPxY * $ky)
+  $nw = [int][Math]::Round($tPxW * $kx); $nh = [int][Math]::Round($tPxH * $ky)
+
+  if ($wasFull) {
+    try { $sw.IsFullScreen = 0 } catch { }
+    Start-Sleep -Milliseconds 250   # 让 PowerPoint 完成退全屏，否则 SetWindowPos 会被随后重排覆盖
+  }
+
+  # SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
+  [void][XtWin]::SetWindowPos($hwnd, [IntPtr]::Zero, $nx, $ny, $nw, $nh, 0x0064)
+  Start-Sleep -Milliseconds 180
+
+  $chk = New-Object XtWin+RECT
+  $verified = $false
+  if ([XtWin]::GetWindowRect($hwnd, [ref]$chk)) {
+    $tolW = [Math]::Max(8, $nw * 0.02)
+    $tolX = [Math]::Max(8, $nw * 0.02)
+    $verified = (([Math]::Abs([double]($chk.R - $chk.L) - $nw) -le $tolW) -and
+                 ([Math]::Abs([double]$chk.L - $nx) -le $tolX))
+  }
+  if (-not $verified) {
+    if ($wasFull) { try { $sw.IsFullScreen = -1 } catch { } }
+    return @{ ok = $false; reason = 'setwindowpos-not-applied'; x = $nx; y = $ny; w = $nw; h = $nh; ratio = [Math]::Round($kx, 4); hwnd = $hwnd.ToInt64() }
+  }
+
+  if ($wasFull) {
+    try { $sw.IsFullScreen = -1 } catch { }
+    Start-Sleep -Milliseconds 350   # 等 PowerPoint 完成全屏重排，再读最终落点
+  }
+
+  # 全屏后 PowerPoint 会重排窗口，最终落点以回读为准（出问题时这一项最直观）
+  $fin = New-Object XtWin+RECT
+  $fx = $nx; $fy = $ny; $fw = $nw; $fh = $nh; $haveFin = $false
+  if ([XtWin]::GetWindowRect($hwnd, [ref]$fin)) {
+    $fx = [int]$fin.L; $fy = [int]$fin.T; $fw = [int]($fin.R - $fin.L); $fh = [int]($fin.B - $fin.T)
+    $haveFin = $true
+  }
+  return @{ ok = $true; x = $nx; y = $ny; w = $nw; h = $nh; ratio = [Math]::Round($kx, 4);
+    hwnd = $hwnd.ToInt64(); verified = $verified;
+    fx = $fx; fy = $fy; fw = $fw; fh = $fh; haveFinal = $haveFin }
+}
+
 # 把幻灯片放映窗口搬到指定的那块屏（老师要的是「投到扩展屏」，而 PowerPoint 默认只认主屏）。
-# 难点：SlideShowWindow 的 Left/Top/Width/Height 单位是「点」，跟调用方给的像素不是 1:1
-# （还叠加每屏 DPI 缩放）。这里不做任何硬编码换算，而是拿放映窗口当前的尺寸 ÷ 它所在屏的
-# 像素尺寸反推比例，再按比例把目标屏换算过去；搬完读回校验，PowerPoint 若不接受全屏窗
-# 的新位置（部分版本），就退回「窗口模式按目标屏尺寸定位」，画面照样铺满投影屏。
+#
+# 【为什么走 Win32】旧版用 SlideShowWindow 的 Left/Top/Width/Height 定位，全屏模式下
+# 无效：这三个值报的是「幻灯片尺寸」（实测恒为 1280x720 这种 16:9 固定值），不是窗口
+# 尺寸，设上去也读不回来。现场表现就是画面纹丝不动地留在 4K 主屏上，投屏彻底失效。
+#
+# 【比例从哪来】不再猜源屏。旧版「按宽高比最接近」反推在混合 DPI 下必然认错：
+# 4K@150% 与 2K@100% 两块屏在 DIP 空间里都是 2560x1440、宽高比完全相同，循环取到
+# 列表第一块（主屏），拿它的尺寸算出的比例是错的。现在直接问系统窗口落在哪块屏。
 function Move-ShowToDisplay($sw, $displays, $idx) {
   if (-not $displays -or $displays.Count -le 1) { return @{ ok = $true; reason = 'single-display' } }
   if ($idx -lt 0 -or $idx -ge $displays.Count) { return @{ ok = $false; reason = 'no-target' } }
   $t = $displays[$idx]
 
-  $swW = 0.0; $swH = 0.0; $full = $false
-  try {
-    $swW = [double]$sw.Width; $swH = [double]$sw.Height; $full = ($sw.IsFullScreen -ne 0)
-  } catch { }
-  if ($swW -le 0 -or $swH -le 0) { return @{ ok = $false; reason = 'no-show-size' } }
+  $full = $false
+  try { $full = ($sw.IsFullScreen -ne 0) } catch { }
 
-  # 找放映窗口当前落在哪块屏：按宽高比最接近的一块（主屏与投影同分辨率时按顺序取到主屏）
-  $src = $null; $best = 1e9
-  $ar = $swW / $swH
-  foreach ($d in $displays) {
-    if ([double]$d.h -le 0) { continue }
-    $diff = [Math]::Abs(([double]$d.w / [double]$d.h) - $ar)
-    if ($diff -lt $best) { $best = $diff; $src = $d }
+  # 目标屏的物理矩形。px* 由主进程算好（旧调用方没给时按 scale 就地补算）。
+  $pScale = 1.0
+  foreach ($d in $displays) { if ($d.primary) { $pScale = [double]$d.scale; break } }
+  $tPxX = if ($null -ne $t.pxX) { [double]$t.pxX } else { [double]$t.x * $pScale }
+  $tPxY = if ($null -ne $t.pxY) { [double]$t.pxY } else { [double]$t.y * $pScale }
+  $tPxW = if ($null -ne $t.pxW) { [double]$t.pxW } else { [double]$t.w * [double]$t.scale }
+  $tPxH = if ($null -ne $t.pxH) { [double]$t.pxH } else { [double]$t.h * [double]$t.scale }
+  if ($tPxW -le 0 -or $tPxH -le 0) { return @{ ok = $false; reason = 'no-target-display' } }
+
+  $win = Move-ShowWindowWin32 $sw $tPxX $tPxY $tPxW $tPxH $full
+  if ($win.ok) {
+    return @{ ok = $true; reason = 'moved'; mode = 'win32';
+      x = $win.x; y = $win.y; w = $win.w; h = $win.h; ratio = $win.ratio; hwnd = $win.hwnd;
+      finalX = $win.fx; finalY = $win.fy; finalW = $win.fw; finalH = $win.fh;
+      targetPxX = $tPxX; targetPxY = $tPxY; targetPxW = $tPxW; targetPxH = $tPxH }
   }
-  if (-not $src) { return @{ ok = $false; reason = 'no-src-display' } }
 
-  $kx = $swW / [double]$src.w
-  $ky = $swH / [double]$src.h
-  $nx = [Math]::Round([double]$t.x * $kx); $ny = [Math]::Round([double]$t.y * $ky)
-  $nw = [Math]::Round([double]$t.w * $kx); $nh = [Math]::Round([double]$t.h * $ky)
+  # ── 兜底：Win32 拿不到窗口（老版 PowerPoint / 脚本宿主异常）时退回纯 COM ──
+  # 此时只能用 COM 尺寸反推比例，源屏按主屏算（Run() 总把放映窗口先开在主屏上）。
+  $swW = 0.0; $swH = 0.0
+  try { $swW = [double]$sw.Width; $swH = [double]$sw.Height } catch { }
+  if ($swW -le 0 -or $swH -le 0) {
+    return @{ ok = $false; reason = $win.reason; win32Reason = $win.reason; x = $win.x; y = $win.y; w = $win.w; h = $win.h; targetPxX = $tPxX; targetPxY = $tPxY; targetPxW = $tPxW; targetPxH = $tPxH }
+  }
+  $srcPxW = [double]$displays[0].w * [double]$displays[0].scale
+  $srcPxH = [double]$displays[0].h * [double]$displays[0].scale
+  if ($null -ne $displays[0].pxW) { $srcPxW = [double]$displays[0].pxW; $srcPxH = [double]$displays[0].pxH }
+  if ($srcPxW -le 0 -or $srcPxH -le 0) { return @{ ok = $false; reason = 'no-src-display' } }
 
+  $kx = $swW / $srcPxW; $ky = $swH / $srcPxH
+  $nx = [Math]::Round($tPxX * $kx); $ny = [Math]::Round($tPxY * $ky)
+  $nw = [Math]::Round($tPxW * $kx); $nh = [Math]::Round($tPxH * $ky)
   $mode = 'fullscreen'
   $tol = [Math]::Max(6, $nw * 0.02)
   try { $sw.Left = $nx; $sw.Top = $ny; $sw.Width = $nw; $sw.Height = $nh } catch { }
@@ -104,19 +312,18 @@ function Move-ShowToDisplay($sw, $displays, $idx) {
   try {
     $moved = ([Math]::Abs([double]$sw.Left - $nx) -le $tol) -and ([Math]::Abs([double]$sw.Width - $nw) -le $tol)
   } catch { }
-
   if (-not $moved) {
-    # 兜底：退全屏 → 按目标屏尺寸定位成「窗口放映」，PowerPoint 各版本都吃这套
     $mode = 'windowed'
     try {
       $sw.IsFullScreen = 0
       $sw.Left = $nx; $sw.Top = $ny; $sw.Width = $nw; $sw.Height = $nh
       $moved = $true
     } catch {
-      return @{ ok = $false; reason = 'move-refused'; x = $nx; y = $ny; w = $nw; h = $nh }
+      return @{ ok = $false; reason = 'move-refused'; x = $nx; y = $ny; w = $nw; h = $nh; targetPxX = $tPxX; targetPxY = $tPxY; targetPxW = $tPxW; targetPxH = $tPxH }
     }
   }
-  return @{ ok = $true; reason = 'moved'; mode = $mode; x = $nx; y = $ny; w = $nw; h = $nh; ratio = [Math]::Round($kx, 4) }
+  return @{ ok = $true; reason = 'moved-com'; mode = $mode; win32Reason = $win.reason; x = $nx; y = $ny; w = $nw; h = $nh;
+    ratio = [Math]::Round($kx, 4); targetPxX = $tPxX; targetPxY = $tPxY; targetPxW = $tPxW; targetPxH = $tPxH }
 }
 
 # 执行单个动作，返回 hashtable（不直接输出/退出，方便一次性与常驻两种模式复用）

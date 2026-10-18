@@ -1,7 +1,7 @@
 {
   "name": "xiaotian-aigc",
   "productName": "小天AIGC",
-  "version": "2026.10.17",
+  "version": "2026.10.19",
   "description": "小天AIGC · 课堂演示中控：音乐、PPT一键放映、视频投第二显示器",
   "main": "src/main/index.js",
   "author": "小天AIGC",

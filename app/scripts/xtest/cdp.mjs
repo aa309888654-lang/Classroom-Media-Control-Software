@@ -45,13 +45,38 @@ export async function attach(port = 9235, urlMatch = 'index.html') {
     await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 2 });
     await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 2 });
   };
-  /** 取某元素的中心坐标 */
-  const centerOf = (sel) => ev(`(() => {
-    const e = document.querySelector(${JSON.stringify(sel)});
-    if (!e) return null;
-    const r = e.getBoundingClientRect();
-    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
-  })()`);
+  /** 取某元素的中心坐标。
+   *  先把它滚进视野再量：面板内容是内部滚动容器（.content overflow-y:auto），
+   *  窗口偏矮时「正在播放」条会折行到 147px 高，控制键中心落到折叠线下方，
+   *  被固定在底部的状态栏盖住——此时 elementFromPoint 命中的是状态栏而不是按钮，
+   *  真实点击会打空。用 block:'center' 而不是 'nearest'，避免贴着折叠线仍然被遮。 */
+  const centerOf = async (sel) => {
+    const found = await ev(`(() => {
+      const e = document.querySelector(${JSON.stringify(sel)});
+      return !!e;
+    })()`);
+    if (!found) return null;
+    await ev(`(async () => {
+      const e = document.querySelector(${JSON.stringify(sel)});
+      if (!e) return;
+      e.scrollIntoView({ block: 'center', inline: 'center' });
+      // .content 带 scroll-behavior:smooth，滚动是异步动画：等两帧并不够，
+      // 坐标会在动画途中被量到中间值。这里轮询到坐标连续两次相同为止。
+      let lastY = null;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => requestAnimationFrame(r));
+        const y = Math.round(e.getBoundingClientRect().top);
+        if (y === lastY) break;
+        lastY = y;
+      }
+    })()`);
+    return ev(`(() => {
+      const e = document.querySelector(${JSON.stringify(sel)});
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
+    })()`);
+  };
   const close = () => { try { ws.close(); } catch { } };
 
   await send('Page.enable');

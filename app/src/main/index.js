@@ -463,8 +463,13 @@ async function presentPpt(file) {
     const show = result.show;
     if (!show || show.ok === false) {
       toast('没能把画面投到扩展屏，仍投在本机屏幕：请确认已切到扩展显示模式、投影屏已点亮', 'warn');
-    } else if (show.mode === 'windowed') {
-      toast(`已投到扩展屏（${displays.projectionDisplay().bounds.width}×${displays.projectionDisplay().bounds.height}）`, 'ok');
+    } else {
+      // 优先用搬运回报里的目标屏物理像素（DIP 在混合 DPI 下没有参考价值），
+      // 老版本脚本没回报时退回 displayTable 的 px 字段，再不行才用 DIP 宽高
+      const d = (displays.displayTable()[target.index]) || {};
+      const w = show.targetPxW || d.pxW || d.w || 0;
+      const h = show.targetPxH || d.pxH || d.h || 0;
+      toast(w && h ? `已投到扩展屏（${w}×${h}）` : '已投到扩展屏', 'ok');
     }
   }
   // 先自动置顶（老师不手动开也要挡住 PPT 窗口），下面的补救重断言才有效

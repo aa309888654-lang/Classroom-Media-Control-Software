@@ -229,9 +229,14 @@ await phase('D 播放冲突', async () => {
       const tip = await ev(`(() => {
         const box = document.getElementById('toasts');
         const last = box && box.lastElementChild;
-        return last ? last.textContent : '';
+        return JSON.stringify({
+          n: box ? box.children.length : -1,
+          last: last ? last.textContent : '',
+          all: box ? [...box.children].map((c) => c.textContent) : [],
+          videoPlaying: !!(window.state && window.state.video && window.state.video.playing),
+        });
       })()`);
-      c.check('D6 拦截有用户可见提示（toast）', String(tip).includes('视频投放中'), String(tip).slice(0, 50));
+      c.check('D6 拦截有用户可见提示（toast）', String(tip).includes('视频投放中'), String(tip).slice(0, 220));
     }
 
     const cb = await centerOf('#btnPlayCat');
