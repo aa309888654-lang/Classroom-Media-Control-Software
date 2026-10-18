@@ -15,12 +15,22 @@ function resolveControlScript() {
 // Windows 优先走常驻 PowerShell 服务（免每次冷启动，Esc 退出等操作从 ~1.5s 降到 ~0.1s）；
 // 服务不可用/超时（exec 返回 null）→ 回退一次性 spawn 模式。
 // channel='thumb' 走独立常驻进程：导缩略图慢（单张可达秒级），不能排在翻页命令前面堵住控制
+// params.displays / params.targetIndex：放映时把放映窗口定位到指定屏（扩展屏投放），
+// 两条通路都要带，否则回退 spawn 时又投回主屏。
 function runCtl(action, params = {}, timeoutMs = 10000, channel = 'ctl') {
   if (isMac) return spawnCtl(action, params, timeoutMs);
   return pptServer.exec(action, params, Math.max(4000, timeoutMs), channel).then((r) => {
     if (r) return r;
     return spawnCtl(action, params, timeoutMs);
   });
+}
+
+// 丢掉常驻通道进程（换新进程 = 换新 COM 上下文）。
+// 常驻 PowerShell 里缓存的 PowerPoint 代理一旦失效，后续命令会持续 open-failed 或挂死，
+// 只有重启该通道才恢复得回来。macOS 走一次性 spawn，本来就没有常驻状态。
+function resetChannel(channel = 'ctl') {
+  if (isMac) return false;
+  try { return pptServer.resetChannel(channel); } catch { return false; }
 }
 
 function spawnCtl(action, params = {}, timeoutMs = 10000) {
@@ -47,6 +57,8 @@ function spawnCtl(action, params = {}, timeoutMs = 10000) {
         '-ExportDir', params.exportDir || '',
         '-Page', String(params.page || 0),
         '-NoExport', params.noexport ? 'true' : '',
+        '-Displays', params.displays || '',
+        '-TargetIndex', String(Number.isInteger(params.targetIndex) ? params.targetIndex : -1),
       ];
     }
     let out = '', settled = false;
@@ -76,11 +88,15 @@ function getState() {
 }
 
 // 正式放映：Windows 走 COM（失败降级 POWERPNT /S）；macOS 走 AppleScript（无降级）
-async function present(file, preferProgId, forceExtend = false) {
-  const result = await runCtl('start', { progId: preferProgId || '', path: file }, 15000);
+// target：{ displays, index } —— 目标屏定位信息（有扩展屏时把放映窗口搬过去）
+async function present(file, preferProgId, forceExtend = false, target = null) {
+  const t = target && Array.isArray(target.displays) && target.index >= 0
+    ? { displays: JSON.stringify(target.displays), targetIndex: target.index }
+    : {};
+  const result = await runCtl('start', { progId: preferProgId || '', path: file, ...t }, 15000);
   if (result.ok) {
     state = { presenting: true, file, progId: result.progId || preferProgId || '' };
-    return { ok: true, mode: isMac ? 'applescript' : 'com', state: getState() };
+    return { ok: true, mode: isMac ? 'applescript' : 'com', show: result.show || null, state: getState() };
   }
   if (!isMac && result.error === 'no-office-com') {
     const ok = await fallbackStart(file);
@@ -175,7 +191,7 @@ if ($ok) {
   });
 }
 
-module.exports = { present, exitPresent, syncStatus, getState, nextSlide, prevSlide, gotoSlide, pageInfo, presenterInfo, runCtl };
+module.exports = { present, exitPresent, syncStatus, getState, nextSlide, prevSlide, gotoSlide, pageInfo, presenterInfo, runCtl, resetChannel };
 
 // 翻页：脚本直接驱动放映视图，无需抢焦点
 async function nextSlide() { return runCtl('next', { progId: state.progId }, 6000); }

@@ -2,11 +2,30 @@ const v = document.getElementById('v');
 const vBar = document.getElementById('vBar');
 const vPlayBtn = document.getElementById('vPlay');
 const vPlayIco = document.getElementById('vPlayIco');
+const vBackBtn = document.getElementById('vBack');
+const vFwdBtn = document.getElementById('vFwd');
 const vTime = document.getElementById('vTime');
 const vSeek = document.getElementById('vSeek');
 const vVol = document.getElementById('vVol');
 const vVolBtn = document.getElementById('vVolBtn');
+const vVolDownBtn = document.getElementById('vVolDown');
+const vVolUpBtn = document.getElementById('vVolUp');
 const vWinBtn = document.getElementById('vWin');
+
+// 步进：前进/后退各 10 秒、音量各 5%。面板 IPC 和播放窗按钮共用同一套口径，
+// 老师不管从遥控器还是直接点屏幕，行为完全一致。
+const SEEK_STEP = 10;
+const VOL_STEP = 0.05;
+function stepTime(delta) {
+  const d = isFinite(v.duration) ? v.duration : 0;
+  v.currentTime = Math.max(0, Math.min(d || Infinity, (v.currentTime || 0) + delta));
+}
+function stepVol(delta) {
+  v.volume = Math.max(0, Math.min(1, v.volume + delta));
+  if (v.volume > 0) v.muted = false; // 调高音量等于取消静音，否则看着有音量却没声
+  syncVolIcon();
+  reportProgress(true);
+}
 
 function fileUrl(p) {
   const norm = String(p).replace(/\\/g, '/');
@@ -19,23 +38,107 @@ function fmt(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-window.api.on('video:load', ({ file }) => {
+/* ---------- 播放进度上报：主进程转给控制面板，在面板里也显示一条进度条 ----------
+ * 视频本体在另一个窗口/屏幕上播放，老师手上只有控制面板，进度必须回传才看得见。
+ * 500ms 节流：timeupdate 约 4Hz，全量转 enough 看清进度又不刷爆 IPC；
+ * 播放/暂停/跳转/换片这类状态变化用 force 立即报，面板按钮和进度条不会慢半拍。 */
+let lastReportAt = 0;
+function reportProgress(force) {
+  const now = Date.now();
+  if (!force && now - lastReportAt < 500) return;
+  lastReportAt = now;
+  const d = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  window.api.invoke('video:progress', {
+    t: Math.max(0, Math.min(d || 1e9, v.currentTime || 0)),
+    d,
+    p: v.paused ? 1 : 0,
+  }).catch(() => { });
+}
+
+/* ---------- 图片投放（视频板块也收图片）：整屏 + 左右翻图 + 自动轮播 ---------- */
+const img = document.getElementById('img');
+const imgBar = document.getElementById('imgBar');
+const imgInfo = document.getElementById('imgInfo');
+const imgAutoBtn = document.getElementById('imgAuto');
+let imgState = { index: 0, count: 1, auto: false, seconds: 5 };
+let imgTimer = null;
+
+function stopImgTimer() { if (imgTimer) { clearInterval(imgTimer); imgTimer = null; } }
+// 自动轮播到头后从头继续（循环），不自动停：讲义/板书照片本来就是一组
+function startImgTimer() {
+  stopImgTimer();
+  if (!imgState.auto || imgState.count < 2) return;
+  imgTimer = setInterval(() => window.api.invoke('video:control', 'next'), Math.max(1000, imgState.seconds * 1000));
+}
+function renderImgBar() {
+  imgInfo.textContent = `${imgState.index + 1} / ${imgState.count}`;
+  imgAutoBtn.textContent = `自动轮播：${imgState.auto ? '开' : '关'}${imgState.auto ? `（${imgState.seconds}s）` : ''}`;
+  imgAutoBtn.style.color = imgState.auto ? '#7fd1ff' : '';
+}
+function applyImgState(s) {
+  imgState = { ...imgState, ...(s || {}) };
+  renderImgBar();
+  if (imgState.auto) startImgTimer(); else stopImgTimer();
+}
+
+window.api.on('video:load', (payload) => {
+  const file = payload && payload.file;
+  if (payload && payload.kind === 'img') {
+    document.body.classList.add('img-mode');
+    img.src = fileUrl(file);
+    img.alt = String(file || '').split(/[\\/]/).pop();
+    applyImgState({ index: payload.index || 0, count: payload.count || 1, auto: !!payload.auto, seconds: payload.seconds || 5 });
+    return;
+  }
+  document.body.classList.remove('img-mode');
+  img.removeAttribute('src');
+  stopImgTimer();
   v.src = fileUrl(file);
   v.volume = 1;
   v.play().catch(() => { });
   syncVolIcon();
+  reportProgress(true); // 换片立刻报一次（时长此时可能还是 0，loadedmetadata 会补报）
+});
+
+window.api.on('video:auto', ({ auto, seconds }) => applyImgState({ auto: !!auto, seconds }));
+
+imgBar.querySelector('#imgPrev').addEventListener('click', () => window.api.invoke('video:control', 'prev'));
+imgBar.querySelector('#imgNext').addEventListener('click', () => window.api.invoke('video:control', 'next'));
+imgAutoBtn.addEventListener('click', () => window.api.invoke('video:control', 'auto'));
+
+// 播放窗里的键盘操作：←/→ 翻图，Esc 停止，空格 播/暂停（视频）
+window.addEventListener('keydown', (e) => {
+  if (document.body.classList.contains('img-mode')) {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); window.api.invoke('video:control', 'prev'); return; }
+    if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); window.api.invoke('video:control', 'next'); return; }
+  }
+});
+
+// 控制面板进度条拖动跳转：面板 invoke('video:seek', 秒)
+window.api.on('video:seek', (t) => {
+  const d = isFinite(v.duration) ? v.duration : 0;
+  const sec = Math.max(0, Math.min(d || Infinity, Number(t) || 0));
+  if (!isFinite(sec)) return;
+  v.currentTime = sec;
+  reportProgress(true);
+});
+
+// 全屏 ⇄ 窗口模式：主进程切完把状态推回来，按钮提示跟着变（原来这里没监听，图标一直不变）
+window.api.on('video:windowmode', ({ windowed }) => {
+  vWinBtn.title = windowed ? '切为全屏' : '切为窗口';
 });
 
 window.api.on('video:control', (cmd) => {
   switch (cmd) {
     case 'toggle': v.paused ? v.play().catch(() => { }) : v.pause(); break;
-    case 'fwd': v.currentTime = Math.min(v.duration || 0, v.currentTime + 10); break;
-    case 'back': v.currentTime = Math.max(0, v.currentTime - 10); break;
-    case 'volUp': v.volume = Math.min(1, v.volume + 0.05); syncVolIcon(); break;
-    case 'volDown': v.volume = Math.max(0, v.volume - 0.05); syncVolIcon(); break;
+    case 'fwd': stepTime(SEEK_STEP); break;
+    case 'back': stepTime(-SEEK_STEP); break;
+    case 'volUp': stepVol(VOL_STEP); break;
+    case 'volDown': stepVol(-VOL_STEP); break;
     case 'stop': window.api.invoke('video:notifyEnded'); break;
     default: break;
   }
+  reportProgress(true);
 });
 
 v.addEventListener('ended', () => window.api.invoke('video:notifyEnded'));
@@ -60,10 +163,26 @@ function syncVolIcon() {
 }
 v.addEventListener('volumechange', syncVolIcon);
 
-// 视频窗口获得焦点时，Esc 直接停止投放
+// 视频窗口获得焦点时，Esc 直接停止投放（图片模式下空格/→ 由上面的翻图处理器接管）
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') window.api.invoke('video:notifyEnded');
-  if (e.key === ' ') { e.preventDefault(); v.paused ? v.play().catch(() => { }) : v.pause(); }
+  if (document.body.classList.contains('img-mode')) return;
+  // 视频模式快捷键：←/→ 快退快进，↑/↓ 调音量，和控制条按钮同一步长
+  switch (e.key) {
+    case 'ArrowLeft': e.preventDefault(); stepTime(-SEEK_STEP); reportProgress(true); break;
+    case 'ArrowRight': e.preventDefault(); stepTime(SEEK_STEP); reportProgress(true); break;
+    case 'ArrowUp': e.preventDefault(); stepVol(VOL_STEP); break;
+    case 'ArrowDown': e.preventDefault(); stepVol(-VOL_STEP); break;
+    case ' ':
+      e.preventDefault();
+      v.paused ? v.play().catch(() => { }) : v.pause();
+      break;
+    default: break;
+  }
+});
+// 图片加载失败（U 盘拔出/文件损坏）：和视频一样主动上报结束，别让面板一直显示「投放中」
+img.addEventListener('error', () => {
+  if (document.body.classList.contains('img-mode')) window.api.invoke('video:notifyEnded');
 });
 
 /* ---------- 底部控制条：进度/播放/音量/窗口切换 ---------- */
@@ -87,12 +206,21 @@ v.addEventListener('timeupdate', () => {
   if (!isFinite(v.duration) || v.duration <= 0) return;
   if (!seeking) vSeek.value = Math.round((v.currentTime / v.duration) * 1000);
   if (!seeking) vTime.textContent = `${fmt(v.currentTime)} / ${fmt(v.duration)}`;
+  reportProgress(); // 面板进度条同步
 });
 v.addEventListener('loadedmetadata', () => {
   vTime.textContent = `0:00 / ${fmt(v.duration)}`;
+  reportProgress(true);
 });
+v.addEventListener('play', reportProgress.bind(null, true));
+v.addEventListener('pause', reportProgress.bind(null, true));
+v.addEventListener('seeked', reportProgress.bind(null, true));
 
 vPlayBtn.addEventListener('click', () => { v.paused ? v.play().catch(() => { }) : v.pause(); });
+vBackBtn.addEventListener('click', () => { stepTime(-SEEK_STEP); reportProgress(true); });
+vFwdBtn.addEventListener('click', () => { stepTime(SEEK_STEP); reportProgress(true); });
+vVolDownBtn.addEventListener('click', () => stepVol(-VOL_STEP));
+vVolUpBtn.addEventListener('click', () => stepVol(VOL_STEP));
 vVol.addEventListener('input', () => { v.volume = vVol.value / 100; v.muted = false; syncVolIcon(); });
 vVolBtn.addEventListener('click', () => { v.muted = !v.muted; syncVolIcon(); });
 vWinBtn.addEventListener('click', () => window.api.invoke('video:windowToggle'));
@@ -111,11 +239,14 @@ function vShowClose() {
 function vHideClose() { clearTimeout(vHideTimer); document.body.classList.remove('v-ui'); }
 window.addEventListener('mousemove', (e) => {
   const inHot = (e.clientX <= HOT_X && e.clientY <= HOT_Y) || e.clientY >= window.innerHeight - BAR_Y;
+  // 图片模式悬停的是 imgBar，视频模式是 vBar，两者只显示其一
+  const bar = document.body.classList.contains('img-mode') ? imgBar : vBar;
   if (inHot) vShowClose();
-  else if (Date.now() > hintUntil && !vClose.matches(':hover') && !vBar.matches(':hover')) vHideClose();
+  else if (Date.now() > hintUntil && !vClose.matches(':hover') && !bar.matches(':hover')) vHideClose();
 }, true);
 vClose.addEventListener('mouseenter', vShowClose);
 vClose.addEventListener('mouseleave', () => { vHideTimer = setTimeout(vHideClose, 1200); });
 vBar.addEventListener('mouseenter', vShowClose);
+imgBar.addEventListener('mouseenter', vShowClose);
 vClose.addEventListener('click', () => window.api.invoke('video:notifyEnded'));
 vShowClose();

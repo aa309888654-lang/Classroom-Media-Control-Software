@@ -1,7 +1,7 @@
 {
   "name": "xiaotian-aigc",
   "productName": "小天AIGC",
-  "version": "2026.10.11",
+  "version": "2026.10.17",
   "description": "小天AIGC · 课堂演示中控：音乐、PPT一键放映、视频投第二显示器",
   "main": "src/main/index.js",
   "author": "小天AIGC",
@@ -14,7 +14,8 @@
     "dist": "electron-builder --win",
     "dist:portable": "electron-builder --win portable",
     "dist:nsis": "electron-builder --win nsis",
-    "dist:mac": "electron-builder --mac"
+    "dist:mac": "electron-builder --mac",
+    "dist:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-signature.ps1"
   },
   "devDependencies": {
     "electron": "^33.0.0",

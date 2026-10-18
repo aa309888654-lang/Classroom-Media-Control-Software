@@ -2,6 +2,46 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
+/* ---------- 全局错误边界 ---------- */
+// 捕获未处理的同步异常
+window.addEventListener('error', (e) => {
+  console.error('[Global Error]', e.error);
+  // 上报到主进程日志（如果 toast 函数已初始化则显示提示）
+  if (window.api && window.api.invoke) {
+    window.api.invoke('log:error', {
+      message: e.error?.message || String(e.error),
+      stack: e.error?.stack || ''
+    }).catch(() => {});
+  }
+  // 如果 toast 函数已定义，显示友好提示
+  if (typeof showToast === 'function') {
+    showToast('程序遇到错误，部分功能可能受影响', 'error');
+  }
+});
+
+// 捕获未处理的 Promise 拒绝
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[Unhandled Promise]', e.reason);
+  if (window.api && window.api.invoke) {
+    window.api.invoke('log:error', {
+      message: e.reason?.message || String(e.reason),
+      stack: e.reason?.stack || ''
+    }).catch(() => {});
+  }
+});
+
+/* ---------- IPC 超时保护 ---------- */
+// 封装 IPC 调用，添加 10 秒超时保护，避免主进程卡死时渲染进程永久等待
+async function ipcInvoke(channel, ...args) {
+  const timeoutMs = 10000; // 10 秒超时
+  return Promise.race([
+    window.api.invoke(channel, ...args),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`IPC timeout: ${channel}`)), timeoutMs)
+    )
+  ]);
+}
+
 // ---------- DOM 缓存：避免每次操作都查询 ----------
 const dom = {};
 function cacheDom() {
@@ -60,20 +100,29 @@ function applyBrand(b) {
 
 async function init() {
   cacheDom();
-  const d = await window.api.invoke('app:getInit');
-  state.platform = d.platform || 'win32';
-  state.config = d.config;
-  state.music = d.music || [];
-  applyCatOrder();
-  applyPinned();
-  state.videos = d.videos || [];
-  state.ppts = d.ppts || [];
-  state.displays = d.displays || [];
-  state.office = d.office;
-  state.ppt = d.ppt || { presenting: false };
-  state.video = d.video || { playing: false };
-  state.conflicts = d.hotkeyConflicts || [];
-  state.selectedPpt = (d.config.recentPpt || [])[0] || '';
+  try {
+    const d = await ipcInvoke('app:getInit');
+    state.platform = d.platform || 'win32';
+    state.config = d.config;
+    state.music = d.music || [];
+    applyCatOrder();
+    applyPinned();
+    state.videos = d.videos || [];
+    state.ppts = d.ppts || [];
+    state.displays = d.displays || [];
+    state.office = d.office;
+    state.ppt = d.ppt || { presenting: false };
+    state.video = d.video || { playing: false };
+    state.conflicts = d.hotkeyConflicts || [];
+    state.selectedPpt = (d.config.recentPpt || [])[0] || '';
+  } catch (err) {
+    if (err.message && err.message.includes('IPC timeout')) {
+      console.error('初始化超时，请重启应用');
+      alert('初始化超时，请重启应用');
+      return;
+    }
+    throw err;
+  }
 
   applySectionOrder(); // 按保存的顺序重排主面板板块（音乐/投屏/视频/课堂工具自由布置）
   bindSectionDrag();   // 板块标题长按/竖向拖动排序
@@ -95,6 +144,7 @@ async function init() {
   // 兼容模式（老旧电脑关 GPU 加速后重启生效）：渲染层同步挂类，CSS 据此去掉毛玻璃/重阴影/持续动画
   document.body.classList.toggle('compat-mode', !!state.config.compatMode);
   applyToolsVisibility(); // 顶栏「工具」按钮记忆的课堂工具显隐
+  applyVideoVisibility(); // 顶栏「视频」按钮记忆的视频板块显隐
   // 迷你模式记忆：上次关机时若在迷你模式，直接以迷你面板启动（LED 模式优先，互斥）
   if (state.config.miniMode && state.config.displayMode !== 'led') {
     document.body.classList.add('mini-mode');
@@ -168,6 +218,11 @@ function subscribe() {
     state.ppt = { ...state.ppt, ...s }; renderPptState(); renderMode();
     // 放映时的悬浮控制改由主进程的 floatBar（无边框半透明浮条）承担，面板不再自动变形
   });
+  // 放映自动置顶：主进程临时打开/还原置顶，面板「置顶」按钮跟着点亮/熄灭，避免看着没置顶其实置了
+  window.api.on('window:alwaysOnTop', ({ alwaysOnTop: on }) => {
+    dom.btnPin.classList.toggle('on', !!on);
+    dom.btnPin.title = on ? '取消窗口置顶' : '窗口置顶（放映 PPT 时会自动置顶，结束放映后还原）';
+  });
   window.api.on('video:state', (v) => {
     state.video = v;
     if (typeof v.windowed === 'boolean') state.config.videoWindowed = v.windowed; // 与主进程持久化保持一致
@@ -188,6 +243,10 @@ function subscribe() {
   // LED 模式：内联视频加载与控制
   window.api.on('video:load', ({ file }) => ledVideoLoad(file));
   window.api.on('video:control', (cmd) => ledVideoControl(cmd));
+  // 播放窗的进度回报（控制台模式：视频在投影屏上，面板里显示进度条）
+  window.api.on('video:progress', (p) => renderVideoProgress(p));
+  // 全页缩略图渐进广播（导出中一张张来，轨道边导边显示）
+  window.api.on('ppt:pages', (d) => onPptPages(d));
   window.api.on('peer:list', (list) => renderPeerList(list));
   window.api.on('peer:connected', (s) => onPeerConnected(s));
 }
@@ -248,6 +307,8 @@ function ledVideoLoad(file) {
   v.hidden = false;
   dom.ledIdle.hidden = true;
   v.volume = 1;
+  vpDur = 0; vpLast = null; // 换片：进度归零，别把上一部的时长/位置带到新片
+  renderVideoProgress({ t: 0, d: 0, p: 0 });
   v.play().catch(() => {});
 }
 
@@ -564,7 +625,8 @@ function renderTrackList() {
   cat.tracks.forEach((f, idx) => {
     const playingRow = engine.category === cat.category && engine.idx === idx;
     const row = document.createElement('div');
-    row.className = 'cat-track' + (playingRow ? ' playing' : '');
+    // paused 类：暂停时均衡条停止跳动（CSS 控制）
+    row.className = 'cat-track' + (playingRow ? ' playing' : '') + (playingRow && !engine.playing ? ' paused' : '');
     row.dataset.cat = cat.category;
     row.dataset.idx = String(idx);
     if (playingRow) {
@@ -597,7 +659,9 @@ function renderTrackList() {
     delEl.title = '从曲库删除（移入回收站）';
     delEl.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('music', f, fileName(f)); };
     row.appendChild(delEl);
-    row.title = `${fileName(f)}\n双击播放（单击不播放，避免误触）`;
+    row.title = `${fileName(f)}\n双击播放（单击不播放，避免误触）\n右键可改歌曲名称`;
+    // 右键改名：只对用户曲库里的自定义歌曲开放，内置曲库直接说明原因（主进程也会再挡一次）
+    row.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); openRenameTrack(f); };
     // 单击只浏览不播放（触屏/单击误触不再抢播）；双击才点播这一首
     row.ondblclick = (e) => { e.stopPropagation(); engine.playTrack(cat.category, idx); };
     bindTrackDrag(row, cat, idx); // 曲目行长按/竖拖排序
@@ -963,6 +1027,55 @@ function confirmDeleteFile(kind, file, name) {
   };
 }
 
+/* ---------- 重命名歌曲（右键曲目行） ---------- */
+const RENAME_ERR_TEXT = {
+  builtin: '内置音乐不能改名（内置曲库在安装目录，改了也会被重装覆盖）',
+  'not-found': '文件已不存在（可能刚被移走）',
+  exists: '同一文件夹里已经有这个名字了',
+  busy: '文件正被占用（可能正在播放），稍后再试一次',
+  'bad-name': '名称里不能有 \\ / : * ? " < > | 这些字符',
+  'reserved-name': '这是 Windows 保留名，换一个吧',
+  'too-long': '名字太长了（最多 80 字）',
+  empty: '名字不能为空',
+  io: '改名失败：文件被占用或没有写入权限',
+};
+let renameTarget = ''; // 待改名的曲目完整路径
+// 是不是用户自己曲库里的文件：路径在音乐文件夹下才算（大小写不敏感，Windows 语义）
+function isUserTrack(file) {
+  const root = String(state.config.musicDir || '');
+  if (!root) return false;
+  const norm = (p) => String(p).replace(/\//g, '\\').toLowerCase().replace(/\\+$/, '');
+  return norm(file).startsWith(norm(root) + '\\');
+}
+function openRenameTrack(file) {
+  if (!isUserTrack(file)) { toast(RENAME_ERR_TEXT.builtin, 'warn'); return; }
+  renameTarget = file;
+  const cur = fileName(file).replace(/\.[^.]+$/, '');
+  dom.renameInput.value = cur;
+  dom.renameTip.textContent = `当前：${cur}　·　扩展名 ${fileName(file).match(/\.[^.]+$/)?.[0] || ''} 保持不变`;
+  dom.renameOverlay.hidden = false;
+  dom.renameInput.focus();
+  dom.renameInput.select();
+}
+function closeRename() { dom.renameOverlay.hidden = true; renameTarget = ''; }
+async function submitRename() {
+  const file = renameTarget;
+  const name = dom.renameInput.value;
+  if (!file) { closeRename(); return; }
+  if (!name.trim()) { toast(RENAME_ERR_TEXT.empty, 'warn'); dom.renameInput.focus(); return; }
+  const r = await window.api.invoke('music:renameTrack', { file, name });
+  if (!r || !r.ok) {
+    const err = (r && r.error) || 'io';
+    toast(`改名失败：${RENAME_ERR_TEXT[err] || err}`, 'error');
+    return; // 弹层不关，让老师改了再试
+  }
+  closeRename();
+  state.music = r.music;
+  applyCatOrder(); applyPinned(); engine.setCategories(state.music);
+  renderCategories();
+  toast(`已改名为「${r.name.replace(/\.[^.]+$/, '')}」`, 'ok');
+}
+
 function confirmDeleteCategory(name) {
   dom.confirmTitle.textContent = '删除分类';
   dom.confirmText.textContent = `删除分类「${name}」？对应文件夹将移入回收站（误删可从回收站找回）。`;
@@ -1016,7 +1129,15 @@ function onMusicState(s) {
   }
   kickProgressLoop(); // 开始播放时唤起进度条循环（空闲时它是停的）
   syncMiniStatus();
-  document.querySelector('.now-playing').classList.toggle('playing', s.playing);
+  const npEl = document.querySelector('.now-playing');
+  if (npEl) {
+    npEl.classList.toggle('playing', s.playing);
+    npEl.classList.toggle('paused', !s.playing && !!s.track);
+  }
+  // 曲目行也加 paused 类：暂停时均衡条停止跳动
+  // querySelectorAll 返回空 NodeList 时 forEach 不会抛异常，此处无需空值检查
+  const trackRows = document.querySelectorAll('.cat-track.playing');
+  trackRows.forEach((row) => row.classList.toggle('paused', !s.playing));
   const wantPlayIcon = s.playing ? 'pause' : 'play';
   if (lastPlayIcon !== wantPlayIcon) {
     lastPlayIcon = wantPlayIcon;
@@ -1090,6 +1211,12 @@ function playCatIndex(i) {
     if (state.video.playing) {
       window.api.invoke('video:control', delta > 0 ? 'volUp' : 'volDown');
       showOSD(delta > 0 ? '🔊 视频音量 +5%' : '🔉 视频音量 -5%');
+      return;
+    }
+    // PPT 放映中：音量键已注销（setMediaKeysEnabled(false)），理论上不会执行到此分支
+    if (state.ppt.presenting) {
+      // 防御性检查：如果意外进入此分支，说明音量键状态与放映状态不一致
+      console.warn('[BUG] PPT 放映中不应收到音量键事件（音量键应已注销）');
       return;
     }
     engine.setVolume(Math.min(1, Math.max(0, engine.volume + delta)));
@@ -1191,6 +1318,12 @@ const MEDIA_STACK_MQ = window.matchMedia('(max-width: 960px)');
 function applyMediaSplit() {
   const row = document.querySelector('.media-row');
   if (!row) return;
+  // 视频板块隐藏时不分栏：音乐板独占整行（列/行模板是内联字面量，这里必须显式收敛）
+  if (state.config.videoVisible === false) {
+    row.style.gridTemplateColumns = '1fr';
+    row.style.gridTemplateRows = '';
+    return;
+  }
   // Chromium 的 minmax() 内不能用 var()，网格模板由 JS 写内联字面量
   if (MEDIA_STACK_MQ.matches) {
     const vh = Math.round(Number(state.config.mediaSplitV) > 0 ? Number(state.config.mediaSplitV) : 300);
@@ -1256,8 +1389,23 @@ function applyToolsVisibility() {
   dom.btnTools.title = visible ? '隐藏课堂工具（计时器）' : '显示课堂工具（计时器）';
 }
 
+/* ---------- 视频板块显隐（顶栏「视频」按钮，记忆到配置） ----------
+ * 隐藏时视频板与音视频分隔条一并收起，音乐板独占整行。栅格列/行统一由 applyMediaSplit 写，
+ * 这里只负责挂 body 类 + 重算比例，避免两处各写一套布局规则互相覆盖。 */
+function applyVideoVisibility() {
+  const visible = state.config.videoVisible !== false; // 缺省显示
+  document.body.classList.toggle('video-hidden', !visible);
+  applyMediaSplit(); // 隐藏时收敛为单列，恢复时回到并列/堆叠比例
+  if (dom.btnVideo) {
+    dom.btnVideo.classList.toggle('on', visible);
+    dom.btnVideo.title = visible ? '隐藏视频板块' : '显示视频板块';
+  }
+}
+
 /* ---------- 投屏 ---------- */
 let lastPreopenPpt = ''; // 已触发预打开的课件
+let lastPagesPpt = '';   // 已触发全页缩略图导出的课件
+let pptPagesTimer = null;
 function renderPptState() {
   const p = state.ppt;
   const shownPpt = p.file || state.selectedPpt || '';
@@ -1276,13 +1424,30 @@ function renderPptState() {
     lastPreopenPpt = shownPpt;
     if (state.pptUserPicked) window.api.invoke('ppt:preopen', shownPpt).catch(() => { }); // 用户点选后才预热放映
   }
+  // 选中（或正在放映的）课件变化：后台导出全部页面缩略图（轨道 + 滑块用）。
+  // 延迟 1.2s 再启动：不跟启动/预热抢 COM；已缓存的课件几乎零成本（不启动 PowerPoint）。
+  // 放映中也发请求，但主进程只回「已缓存的页」、不导新图 —— 轨道必须跟着正在放的那份课件，
+  // 否则点缩略图会跳到另一份课件的页码上。
+  // 补导：上次请求撞上「放映中」拿到 0 页时 requested 已被清空，这里在退出放映后重新拉一次，
+  // 否则这份课件的缩略图永远出不来（原来是 requested 一次性锁死，切课件再回来才能恢复）。
+  const needNew = shownPpt && shownPpt !== lastPagesPpt;
+  const needRetry = !p.loading && !p.presenting && railNeedsRetry(shownPpt);
+  if (shownPpt && !p.loading && (needNew || needRetry)) {
+    lastPagesPpt = shownPpt;
+    clearTimeout(pptPagesTimer);
+    pptPagesTimer = setTimeout(() => requestPptPages(shownPpt), needRetry ? 600 : 1200);
+  }
   dom.btnPresent.disabled = !!p.presenting || !!p.loading;
   dom.btnPresent.textContent = p.loading ? '⏳ 正在打开…' : p.presenting ? '🟢 正在放映中' : '▶ 一键放映 PPT';
   // 不放映/不在打开时：隐藏「退出投屏」按钮（只留放映按钮，面板更干净）；放映中或打开中才出现
   dom.btnExitPresent.hidden = !(p.presenting || p.loading);
   dom.btnExitPresent.disabled = !p.presenting && !p.loading;
   dom.pptFlipRow.style.display = p.presenting ? 'flex' : 'none';
+  // 播放条里的 PPT 翻页组：和音乐控制并排，演练时手不用离开底部控制区
+  if (dom.npFlip) dom.npFlip.hidden = !p.presenting;
   if (!p.presenting) { dom.presenterStrip.style.display = 'none'; state.pptPage = null; state.pptPages = null; }
+  // 放映状态变化 → 刷新缩略图轨道的「可点击跳页」样式与页码高亮
+  if (railEls.size) renderPptRail();
   // LED 面板 PPT 按钮同步
   dom.ledPptPresent.textContent = p.presenting ? '✕' : '▶';
   dom.ledPptPresent.title = p.presenting ? '退出放映' : '放映 PPT';
@@ -1300,9 +1465,13 @@ function renderPresenter(s) {
   syncMiniStatus(); // 迷你条同步显示页码
   dom.presenterStrip.style.display = 'flex';
   dom.pptPageInfo.textContent = `第 ${s.position} / ${s.total} 页`;
+  if (dom.pptPageBar) dom.pptPageBar.textContent = `${s.position}/${s.total}`;
   // 5 页胶片：主进程翻页即时回报没带 pages 时沿用上一批，仅更新当前页高亮
   if (Array.isArray(s.pages) && s.pages.length) state.pptPages = s.pages;
   renderPptFilm(s.position);
+  // 全页轨道：presenter 每翻一页都会导当前页缩略图，顺手并进轨道（放映中不再另起导出）
+  if (Array.isArray(s.pages) && s.pages.length && mergeRailPages(s.pages)) renderPptRail();
+  scrollRailToPage(s.position); // 全页轨道跟着当前页平移（用户刚拖过滑块则让位）
   dom.pptNotes.textContent = s.notes || '（无备注）';
   dom.pptNextNotes.textContent = s.nextNotes || '（无备注）';
 }
@@ -1312,8 +1481,23 @@ function renderPresenter(s) {
 const filmEls = new Map(); // page -> { item, img }
 function renderPptFilm(position) {
   const pages = state.pptPages || [];
-  if (!pages.length) return;
   const box = dom.pptFilm;
+  if (!pages.length) {
+    // 放映中却一页胶片都没有：原来直接 return，界面上留一个空框，
+    // 老师会以为功能坏了。写明「正在生成、退出放映后补齐」——
+    // 这里刻意不去 requestPptPages：放映期间主进程本就只读缓存不导出，
+    // 每轮 presenter 轮询都重发一次只会反复清空轨道。真正的补导在 renderPptState 里做。
+    if (!box.querySelector('.film-empty')) {
+      const hint = document.createElement('div');
+      hint.className = 'film-empty';
+      hint.textContent = '缩略图生成中…（退出放映后自动补齐）';
+      box.replaceChildren(hint);
+    }
+    return;
+  }
+  // 有页了：清掉空态提示（再交给下面的增量逻辑复用已有 <img>）
+  const emptyEl = box.querySelector('.film-empty');
+  if (emptyEl) emptyEl.remove();
   const want = new Set(pages.map((p) => p.page));
   for (const [pg, e] of [...filmEls]) {
     if (!want.has(pg)) { e.item.remove(); filmEls.delete(pg); } // 滑出 5 页窗口的页移除
@@ -1346,6 +1530,244 @@ function renderPptFilm(position) {
 
 function fileUrlImg(p) {
   return encodeURI(`file:///${String(p).replace(/\\/g, '/')}`);
+}
+
+/* ---------- 全页缩略图轨道 + 可左右拖动的滑块 ----------
+ * 放映时的 5 页胶片只覆盖前后各两页，长课件想找第 40 页得一路翻。这里把「全部页面」缩略图
+ * 排成一条横向轨道，下方一个可左右拖动的滑块：拖滑块 = 平移轨道，点缩略图 = 直接跳页。
+ * 页面由主进程 ppt:exportAll 在「选中课件且未放映」时后台导出，导一张广播一张，边导边显示。*/
+const pptRail = { file: '', pages: [], total: 0, done: false, stopped: false, requested: '', emptyFor: '' };
+const railEls = new Map();          // page -> item 元素（增量更新，不整体重建）
+let railBarDragging = false;        // 正在拖滑块
+let railDrag = null;                // 直接拖缩略图轨道（按住横向拖）
+let railAutoUntil = 0;              // 程序化滚动窗口：这段期间的 scroll 事件不算「用户在看」
+let railUserAt = 0;                 // 用户最后一次手动滚轨道的时间（此后不自动跟随页码）
+
+function requestPptPages(file) {
+  if (!file) return;
+  // 已经拿到这份课件的页就别再导（省一次 PowerPoint COM）；
+  // 但「请求过却一页都没拿到」必须放行，否则这份课件永远补不上缩略图（判定见 rail-policy.js）
+  if (RailPolicy.shouldSkipRequest(pptRail, file)) return;
+  pptRail.requested = file;
+  pptRail.file = file;
+  pptRail.pages = [];
+  pptRail.total = 0;
+  pptRail.done = false;
+  pptRail.stopped = false;
+  railEls.clear();
+  dom.pptRail.innerHTML = '';
+  syncPptRailBar();
+  window.api.invoke('ppt:exportAll', file).then((r) => {
+    if (pptRail.file !== file) return; // 已经切到别的课件
+    if (!r || !r.ok) {
+      pptRail.emptyFor = file; // 失败也算「没拿到」，下次重试
+      if (r && r.error && r.error !== 'busy') {
+        // 带出主进程回传的 detail：只显示 "open-failed" 用户根本无从下手
+        const why = r.detail ? `（${String(r.detail).slice(0, 80)}）` : '';
+        toast(`页面缩略图导出失败：${r.error}${why}`, 'warn');
+      }
+      renderPptRail();
+      return;
+    }
+    pptRail.total = Number(r.total) || 0;
+    // 放映打断：已导的页留在轨道上，剩下的下次选中这份课件再补
+    if (r.aborted) pptRail.stopped = true;
+    // 一页都没拿到（常见于「选中课件后 1.2s 内就点了放映」：主进程走放映分支只读缓存、这次不导出）
+    // → 标记待补导，退出放映后自动重来一次；非 PPT/空课件（total=0）不反复重试
+    const after = RailPolicy.afterExport(r, pptRail.pages.length);
+    pptRail.emptyFor = after.retry ? file : '';
+    renderPptRail();
+  }).catch(() => { pptRail.emptyFor = file; });
+}
+
+// 这份课件是否「请求过但一页都没拿到」——退出放映后需要补导
+function railNeedsRetry(file) {
+  return RailPolicy.shouldScheduleRequest({
+    file,
+    presenting: state.ppt.presenting,
+    loading: state.ppt.loading,
+    emptyFor: pptRail.emptyFor,
+    requested: pptRail.requested,
+  });
+}
+
+// 合并新拿到的页（去重 + 按页码排序）；已导出的页不会因为 presenter 的 5 页窗口而丢
+function mergeRailPages(list) {
+  if (!list || !list.length) return false;
+  const byPage = new Map(pptRail.pages.map((p) => [p.page, p]));
+  let added = false;
+  for (const p of list) {
+    if (p && p.page && !byPage.has(p.page)) added = true;
+    if (p && p.page) byPage.set(p.page, p);
+  }
+  pptRail.pages = Array.from(byPage.values()).sort((a, b) => a.page - b.page);
+  return added;
+}
+
+function onPptPages(d) {
+  if (!d || !d.file || d.file !== pptRail.file) return;
+  pptRail.done = !!d.done;
+  mergeRailPages(d.pages || []);
+  if (pptRail.pages.length) pptRail.emptyFor = ''; // 拿到页了，不用再补导
+  renderPptRail();
+}
+
+function renderPptRail() {
+  const pages = pptRail.pages;
+  dom.pptRailWrap.hidden = pages.length === 0;
+  if (!pages.length) { railEls.clear(); dom.pptRail.innerHTML = ''; syncPptRailBar(); return; }
+  const box = dom.pptRail;
+  const have = new Set(pages.map((p) => p.page));
+  for (const [pg, el] of [...railEls]) {
+    if (!have.has(pg)) { el.remove(); railEls.delete(pg); }
+  }
+  for (const p of pages) {
+    let el = railEls.get(p.page);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'ppt-rail-item';
+      const img = document.createElement('img');
+      img.alt = `第 ${p.page} 页`;
+      img.decoding = 'async';
+      img.loading = 'lazy'; // 长课件不一次性解码几百张图
+      const num = document.createElement('span');
+      num.className = 'ppt-film-num mono';
+      num.textContent = p.page;
+      el.append(img, num);
+      el.onclick = () => {
+        if (railSuppressClickUntil > Date.now()) return; // 刚拖完轨道，别当成点击
+        if (!state.ppt.presenting) { toast('放映中点击缩略图可直接跳到该页', 'info'); return; }
+        window.api.invoke('ppt:goto', p.page);
+      };
+      el.ondragstart = (e) => e.preventDefault();
+      railEls.set(p.page, el);
+    }
+    el.title = state.ppt.presenting ? `跳到第 ${p.page} 页` : `第 ${p.page} 页（放映中可点击跳页）`;
+    el.classList.toggle('cur', !!(state.pptPage && state.pptPage.position === p.page));
+    el.classList.toggle('off', !state.ppt.presenting);
+    const url = fileUrlImg(p.img);
+    if (el.firstChild.getAttribute('src') !== url) el.firstChild.src = url;
+  }
+  // 页序修正：新导出的页追加在尾部，乱序时才整体重排（避免每次广播都重排）
+  const ordered = pages.map((p) => railEls.get(p.page));
+  if (ordered.some((el, i) => box.children[i] !== el)) {
+    const frag = document.createDocumentFragment();
+    ordered.forEach((el) => frag.appendChild(el));
+    box.appendChild(frag);
+  }
+  const total = Math.max(pptRail.total || 0, pages.length);
+  let info;
+  if (pptRail.done) info = `共 ${pages.length} 页`;
+  else if (pptRail.stopped) info = `已导出 ${pages.length} 页 · 剩余页下次选中补齐`;
+  else if (total > pages.length) info = `导出中 ${pages.length}/${total} 页`;
+  else info = `导出中 ${pages.length} 页…`;
+  dom.pptRailInfo.textContent = state.ppt.presenting ? `${info} · 点击跳页` : info;
+  syncPptRailBar();
+  if (state.pptPage) scrollRailToPage(state.pptPage.position);
+}
+
+// 放映翻页后把当前页滚进可视区；用户刚手动拖过轨道时不抢他的位置
+function scrollRailToPage(page) {
+  if (!page) return;
+  // 当前页高亮必须每次翻页都更新（不能只等 ppt:pages 广播时才刷，否则放映中轨道一直不高亮）
+  for (const [pg, el] of railEls) el.classList.toggle('cur', pg === page);
+  const el = railEls.get(page);
+  if (!el || railAutoUntil > Date.now() || railUserAt > Date.now() - 2500) return;
+  const rail = dom.pptRail;
+  const target = el.offsetLeft - Math.max(0, (rail.clientWidth - el.offsetWidth) / 2);
+  railAutoUntil = Date.now() + 500; // 这段里的 scroll 事件是程序触发的
+  try { rail.scrollTo({ left: Math.max(0, target), behavior: 'smooth' }); }
+  catch { rail.scrollLeft = Math.max(0, target); }
+  syncPptRailBar();
+}
+
+// 自绘滑块：宽度 = 轨道可见比例，位置 = 当前滚动比例（不用系统滚动条，样式统一且好按）
+function syncPptRailBar() {
+  const rail = dom.pptRail;
+  const bar = dom.pptRailBar;
+  const thumb = dom.pptRailThumb;
+  if (!rail || !bar || !thumb) return;
+  const max = rail.scrollWidth - rail.clientWidth;
+  const barW = bar.clientWidth;
+  if (barW <= 0) return;
+  if (max <= 1) { thumb.style.width = '100%'; thumb.style.left = '0px'; thumb.style.opacity = '0.25'; return; }
+  thumb.style.opacity = '';
+  const w = Math.max(30, Math.round(barW * (rail.clientWidth / rail.scrollWidth)));
+  const maxLeft = Math.max(0, barW - w);
+  thumb.style.width = `${w}px`;
+  thumb.style.left = `${Math.round(maxLeft * (rail.scrollLeft / max))}px`;
+}
+
+let railSuppressClickUntil = 0;
+
+function bindPptRail() {
+  const rail = dom.pptRail;
+  const bar = dom.pptRailBar;
+
+  // 轨道滚动 → 滑块跟着走；程序滚动不记成「用户在看」
+  rail.addEventListener('scroll', () => {
+    syncPptRailBar();
+    if (railAutoUntil < Date.now()) railUserAt = Date.now();
+  }, { passive: true });
+
+  // 按住缩略图横向拖动平移轨道（位移超阈值才算拖，避免和「点击跳页」打架）
+  rail.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (rail.scrollWidth <= rail.clientWidth) return;
+    railDrag = { x: e.clientX, left: rail.scrollLeft, moved: false };
+    try { rail.setPointerCapture(e.pointerId); } catch { }
+  });
+  rail.addEventListener('pointermove', (e) => {
+    if (!railDrag) return;
+    const dx = e.clientX - railDrag.x;
+    if (!railDrag.moved && Math.abs(dx) < 5) return;
+    if (!railDrag.moved) { railDrag.moved = true; rail.classList.add('dragging'); }
+    railAutoUntil = 0;
+    rail.scrollLeft = railDrag.left - dx;
+    e.preventDefault();
+  });
+  const endRailDrag = (e) => {
+    if (!railDrag) return;
+    if (railDrag.moved) { railSuppressClickUntil = Date.now() + 300; railUserAt = Date.now(); }
+    railDrag = null;
+    rail.classList.remove('dragging');
+    try { rail.releasePointerCapture(e.pointerId); } catch { }
+  };
+  rail.addEventListener('pointerup', endRailDrag);
+  rail.addEventListener('pointercancel', endRailDrag);
+
+  // 滑块：点哪拖哪，全程跟手（滑块中心对准指针）
+  const barScrollFromPointer = (e) => {
+    const b = bar.getBoundingClientRect();
+    const w = dom.pptRailThumb.offsetWidth;
+    const maxLeft = Math.max(0, b.width - w);
+    const left = Math.min(maxLeft, Math.max(0, e.clientX - b.left - w / 2));
+    dom.pptRailThumb.style.left = `${Math.round(left)}px`;
+    const max = rail.scrollWidth - rail.clientWidth;
+    railAutoUntil = Date.now() + 120; // 拖出来的滚动不算用户翻页
+    if (max > 0) rail.scrollLeft = (left / (maxLeft || 1)) * max;
+    syncPptRailBar();
+  };
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    railBarDragging = true;
+    bar.classList.add('dragging');
+    try { bar.setPointerCapture(e.pointerId); } catch { }
+    barScrollFromPointer(e);
+    e.preventDefault();
+  });
+  bar.addEventListener('pointermove', (e) => { if (railBarDragging) barScrollFromPointer(e); });
+  const endBarDrag = (e) => {
+    if (!railBarDragging) return;
+    railBarDragging = false;
+    bar.classList.remove('dragging');
+    railUserAt = Date.now();
+    try { bar.releasePointerCapture(e.pointerId); } catch { }
+  };
+  bar.addEventListener('pointerup', endBarDrag);
+  bar.addEventListener('pointercancel', endBarDrag);
+
+  window.addEventListener('resize', syncPptRailBar);
 }
 
 function renderRecents() {
@@ -1381,11 +1803,35 @@ function renderRecents() {
 
 function renderDisplays() {
   const n = state.displays.length;
-  const proj = state.displays.find((d) => !d.isPrimary);
-  dom.stDisp.textContent = n > 1 ? `显示器：教师屏0 + 投影屏${proj.index}` : `显示器：仅 1 块（${n > 0 && state.displays[0].isPrimary ? '主屏' : ''}）`;
-  dom.dispInfo.textContent = n > 1
-    ? state.displays.map((d) => `屏${d.index}·${d.isPrimary ? '教师' : '投影'}`).join('  ')
-    : '仅检测到 1 块屏，视频/放映将用当前屏';
+  const proj = state.displays.find((d) => d.isProjection);
+  const target = proj || state.displays.find((d) => !d.isPrimary);
+  dom.stDisp.textContent = n > 1
+    ? `显示器：教师屏0 + 投影屏${target ? target.index : '?'}`
+    : `显示器：仅 1 块${(n > 0 && state.displays[0].isPrimary ? '（主屏）' : '')}`;
+  if (n > 1) {
+    dom.dispInfo.textContent = `已接 ${n} 块屏 · 投屏目标：${target ? target.label : '未知'}（智能识别）`;
+  } else {
+    dom.dispInfo.textContent = '仅检测到 1 块屏：PPT/视频将用本机屏幕（插上投影线并「一键扩展模式」后可投到第二块屏）';
+  }
+  renderDispSelect();
+}
+
+// 投屏目标屏下拉：默认「自动识别」，可手动固定到某一块（多屏/扩展屏位置乱时用）
+function renderDispSelect() {
+  const sel = dom.dispSelect;
+  if (!sel) return;
+  const cur = String((state.config.display && state.config.display.projectionId) || 0);
+  const opts = ['<option value="0">自动识别（推荐）</option>'];
+  for (const d of state.displays) {
+    const mark = d.isPrimary ? '主屏' : (d.internal ? '内置副屏' : '外接屏');
+    opts.push(`<option value="${d.id}">${d.label} · ${mark}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  sel.value = cur;
+  sel.disabled = state.displays.length < 2;
+  sel.title = state.displays.length < 2
+    ? '只有一块屏：先接投影线并切到扩展模式，才能指定投屏目标'
+    : 'PPT / 视频 / 计时统一投到这块屏；默认由系统智能识别外接屏';
 }
 
 function renderOffice() {
@@ -1403,7 +1849,9 @@ function renderMode() {
   if (el.dataset.mode === key) return; // 状态没变不重写 innerHTML（PERF-04：音量拖动每帧都走这里）
   el.dataset.mode = key;
   if (key === 'ppt') el.innerHTML = `<i class="dot busy"></i>PPT 放映中`;
-  else if (key === 'video') el.innerHTML = `<i class="dot busy"></i>视频投放中`;
+  else if (key === 'video') el.innerHTML = state.video.kind === 'img'
+    ? `<i class="dot busy"></i>图片投放中`
+    : `<i class="dot busy"></i>视频投放中`;
   else if (key === 'music') el.innerHTML = `<i class="dot ok"></i>音乐播放中`;
   else el.innerHTML = `<i class="dot"></i>空闲`;
 }
@@ -1427,25 +1875,29 @@ function updateChipThumb(kind, file, thumb) {
 function renderVideos() {
   const box = dom.videoChips;
   if (!state.videos.length) {
-    box.innerHTML = `<span class="dim" style="font-size:12px">视频库为空：把 MP4 放进视频文件夹，或点「选择视频」</span>`;
+    box.innerHTML = `<span class="dim" style="font-size:12px">媒体库为空：把 MP4 或图片（JPG/PNG…）放进视频文件夹，或点「添加视频」</span>`;
     return;
   }
   const frag = document.createDocumentFragment();
   state.videos.forEach((v) => {
+    const isImg = v.kind === 'img';
     const el = document.createElement('div');
-    el.className = 'video-chip sortable-chip' + (state.video.playing && state.video.file === v.file ? ' playing' : '');
+    el.className = 'video-chip sortable-chip' + (state.video.playing && state.video.file === v.file ? ' playing' : '')
+      + (isImg ? ' is-img' : '');
     el.dataset.file = v.file;
-    // 缩略图：生成好了显示首帧，没好显示占位符（异步生成后 thumb:ready 补图）
+    el.dataset.kind = isImg ? 'img' : 'video';
+    // 缩略图：生成好了显示首帧（图片即自身），没好显示占位符（异步生成后 thumb:ready 补图）
     const thumb = v.thumb
       ? `<div class="v-thumb"><img src="${fileUrl_(v.thumb)}" alt="" loading="lazy" decoding="async"></div>`
       : `<div class="v-thumb ph"><span class="ico"></span></div>`;
-    el.innerHTML = `${thumb}<div class="v-name">${esc(v.name)}</div><div class="v-size">${fmtSize(v.size)}</div>`;
-    if (!v.thumb) Icons.set(el.querySelector('.v-thumb.ph .ico'), 'film', 20);
-    el.title = `${v.file}\n点击播放 · 长按拖动可排序`;
+    el.innerHTML = `${thumb}<div class="v-name">${esc(v.name)}</div><div class="v-size">${isImg ? '图片' : fmtSize(v.size)}</div>`;
+    if (!v.thumb) Icons.set(el.querySelector('.v-thumb.ph .ico'), isImg ? 'fullscreen' : 'film', 20);
+    el.title = isImg ? `${v.file}\n点击整屏投放这张图片 · 左右翻图 / 自动轮播 · 长按拖动可排序`
+      : `${v.file}\n点击播放 · 长按拖动可排序`;
     // 删除按钮：悬停卡片右上角显现，移入回收站可找回
     const vdel = document.createElement('span');
     vdel.className = 'chip-del';
-    vdel.title = '从视频库删除（移入回收站）';
+    vdel.title = '从媒体库删除（移入回收站）';
     vdel.textContent = '✕';
     vdel.onclick = (e) => { e.stopPropagation(); confirmDeleteFile('video', v.file, v.name); };
     el.appendChild(vdel);
@@ -1588,14 +2040,131 @@ function finishChipSort(x, y) {
 }
 
 function renderVideoState() {
+  const isImg = state.video.kind === 'img';
   dom.btnStopVideo.disabled = !state.video.playing;
-  dom.videoRemote.style.display = state.video.playing ? 'flex' : 'none';
+  // 视频播的是视频控件，图片播的是翻图/轮播控件：两排按钮只显示当前这排
+  dom.videoRemote.style.display = state.video.playing && !isImg ? 'flex' : 'none';
+  dom.videoImageRemote.style.display = state.video.playing && isImg ? 'flex' : 'none';
+  // 进度条只在投放中显示；停播时归零，下次起播从 0:00 开始（不复用上一部的进度）
+  dom.videoProgress.hidden = !state.video.playing || isImg;
+  if (isImg) {
+    const n = state.video.count || 1;
+    const i = Math.max(0, state.video.index || 0);
+    dom.imgPageInfo.textContent = `${i + 1} / ${n}`;
+    dom.btnIAutoText.textContent = `自动轮播：${state.video.auto ? '开' : '关'}`;
+    dom.btnIAuto.classList.toggle('on', !!state.video.auto);
+    dom.btnIWinText.textContent = state.video.windowed ? '切为全屏' : '切为窗口';
+  }
+  if (!state.video.playing) {
+    vpDur = 0;
+    vpLast = null;
+    setVideoProgressUI(0);
+    dom.videoTimeNow.textContent = '0:00';
+    dom.videoTimeAll.textContent = '0:00';
+    dom.videoPlayState.textContent = '';
+  }
   const mode = state.video.windowed ? '窗口模式' : '全屏投放';
-  dom.videoHint.textContent = state.video.playing ? `投放中：${fileName(state.video.file)}（${mode}）` : '';
+  const kindText = isImg ? '图片投放' : '视频投放';
+  dom.videoHint.textContent = state.video.playing ? `${kindText}：${fileName(state.video.file)}（${mode}）` : '';
   if (dom.btnVWinText) dom.btnVWinText.textContent = state.video.windowed ? '切为全屏' : '切为窗口';
   // LED 面板视频按钮同步
   dom.ledVToggle.textContent = state.video.playing ? '⏸' : '▶';
   syncVideoChipsPlaying(); // 只同步播放态 class，不再整列表重建（PERF-03）
+}
+
+/* ---------- 视频进度条（面板侧） ----------
+ * 视频播在投影屏的另一个窗口里，老师手上只有控制面板：进度必须由播放窗回报过来才看得见。
+ * 拖动跳转也反过来走同一条链路：面板 → 主进程 → 播放窗（LED 内联模式面板自己就是播放器，直接本地 seek）。*/
+let vpDur = 0;        // 总时长（秒）
+let vpDragging = false;
+let vpLast = null;    // 最近一次进度回报（LED 内联模式直接读本地 <video>，不经过播放窗）
+
+function fmtSec(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (sec >= 3600) return `${Math.floor(sec / 3600)}:${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function setVideoProgressUI(ratio) {
+  const pct = `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(2)}%`;
+  dom.videoFill.style.width = pct;
+  dom.videoKnob.style.left = pct;
+}
+
+// 播放窗回报 / LED 内联 video 的 timeupdate 都走这里
+function renderVideoProgress(p) {
+  if (!p) return;
+  vpLast = p;
+  if (!dom.videoProgress || dom.videoProgress.hidden) return;
+  vpDur = Number(p.d) || 0;
+  const ratio = vpDur > 0 ? Math.max(0, Math.min(1, (Number(p.t) || 0) / vpDur)) : 0;
+  if (!vpDragging) {
+    setVideoProgressUI(ratio);
+    dom.videoTimeNow.textContent = fmtSec(ratio * vpDur);
+  }
+  dom.videoTimeAll.textContent = vpDur > 0 ? fmtSec(vpDur) : '--:--';
+  dom.videoPlayState.textContent = p.p ? '⏸ 已暂停' : '▶ 播放中';
+}
+
+// 拖动：先跟手更新 UI，松手才真正 seek —— 拖动途中每帧都发 seek 会把视频解码器打爆（每 seek 一次就要重解码）
+function videoSeekRatioFromPointer(e) {
+  const rect = dom.videoSeek.getBoundingClientRect();
+  if (!rect.width) return null;
+  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  setVideoProgressUI(ratio);
+  dom.videoTimeNow.textContent = fmtSec(ratio * vpDur);
+  return ratio;
+}
+
+function commitVideoSeek(ratio) {
+  if (vpDur <= 0) return;
+  const t = ratio * vpDur;
+  // LED 模式：视频就播在面板自己的 <video> 上，直接本地 seek，不绕 IPC
+  if (document.body.classList.contains('led-mode') && dom.ledVideo.src) {
+    dom.ledVideo.currentTime = t;
+    return;
+  }
+  window.api.invoke('video:seek', { t }).catch(() => {});
+}
+
+function bindVideoProgress() {
+  dom.videoSeek.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (vpDur <= 0) return;
+    vpDragging = true;
+    dom.videoSeek.classList.add('dragging');
+    try { dom.videoSeek.setPointerCapture(e.pointerId); } catch { }
+    videoSeekRatioFromPointer(e);
+    e.preventDefault();
+  });
+  dom.videoSeek.addEventListener('pointermove', (e) => {
+    if (!vpDragging) return;
+    videoSeekRatioFromPointer(e);
+  });
+  const endDrag = (e) => {
+    if (!vpDragging) return;
+    vpDragging = false;
+    dom.videoSeek.classList.remove('dragging');
+    try { dom.videoSeek.releasePointerCapture(e.pointerId); } catch { }
+    const ratio = videoSeekRatioFromPointer(e); // 松手位置 = 最终目标
+    if (ratio != null) commitVideoSeek(ratio);
+  };
+  dom.videoSeek.addEventListener('pointerup', endDrag);
+  dom.videoSeek.addEventListener('pointercancel', endDrag);
+  dom.videoSeek.addEventListener('lostpointercapture', () => { vpDragging = false; dom.videoSeek.classList.remove('dragging'); });
+
+  // LED 内联播放：进度直接来自面板自己的 <video>（没有第二个播放窗可回报）
+  const ledTick = () => {
+    if (!document.body.classList.contains('led-mode') || !state.video.playing) return;
+    const v = dom.ledVideo;
+    renderVideoProgress({ t: v.currentTime, d: isFinite(v.duration) ? v.duration : 0, p: v.paused ? 1 : 0 });
+  };
+  dom.ledVideo.addEventListener('timeupdate', ledTick);
+  dom.ledVideo.addEventListener('play', ledTick);
+  dom.ledVideo.addEventListener('pause', ledTick);
+  dom.ledVideo.addEventListener('loadedmetadata', ledTick);
+  dom.ledVideo.addEventListener('seeked', ledTick);
 }
 
 // 只切换各视频芯片的 playing 高亮，不重建 DOM（video:state 每次广播都会走到这里）
@@ -1685,6 +2254,15 @@ function bindUI() {
     state.config.toolsVisible = state.config.toolsVisible === false; // false→true / 其他→false
     window.api.invoke('config:save', { toolsVisible: state.config.toolsVisible !== false });
     applyToolsVisibility();
+  };
+
+  // 顶栏「视频」：显示/隐藏整个视频板块（隐藏后音乐板占满整行）
+  dom.btnVideo.onclick = () => {
+    state.config.videoVisible = state.config.videoVisible === false; // false→true / 其他→false
+    const on = state.config.videoVisible !== false;
+    window.api.invoke('config:save', { videoVisible: on });
+    applyVideoVisibility();
+    toast(on ? '视频板块已显示' : '视频板块已隐藏，点顶栏「视频」恢复', 'info');
   };
 
   // 音乐管理模式开关：点亮后各分类出现「＋」添加、曲目/分类的 ✕ 删除常显、可长按拖动排序
@@ -1801,6 +2379,7 @@ function bindUI() {
     }
     if (e.key !== 'Escape') return;
     if (loopMenuEl) { closeLoopMenu(); return; }
+    if (!dom.renameOverlay.hidden) { closeRename(); return; }
     if (!dom.confirmOverlay.hidden) { dom.confirmOverlay.hidden = true; confirmCb = null; return; }
     if (!dom.castOverlay.hidden) { dom.castOverlay.hidden = true; return; }
     if (!dom.remoteOverlay.hidden) { dom.remoteOverlay.hidden = true; return; }
@@ -1821,9 +2400,22 @@ function bindUI() {
   dom.btnConfirmCancel.onclick = () => { dom.confirmOverlay.hidden = true; confirmCb = null; };
   dom.confirmOverlay.onclick = (e) => { if (e.target.id === 'confirmOverlay') { dom.confirmOverlay.hidden = true; confirmCb = null; } };
 
+  // 重命名弹层：Enter 保存 / Esc 或点遮罩取消
+  dom.btnRenameOk.onclick = () => { submitRename(); };
+  dom.btnRenameCancel.onclick = () => { closeRename(); };
+  dom.renameOverlay.onclick = (e) => { if (e.target.id === 'renameOverlay') closeRename(); };
+  dom.renameInput.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') submitRename();
+    else if (e.key === 'Escape') closeRename();
+  };
+
   // PPT 翻页
   dom.btnPptNext.onclick = () => window.api.invoke('ppt:next');
   dom.btnPptPrev.onclick = () => window.api.invoke('ppt:prev');
+  // 播放条里的翻页键复用同一套动作，避免两处逻辑分叉
+  if (dom.btnPptNextBar) dom.btnPptNextBar.onclick = () => dom.btnPptNext.click();
+  if (dom.btnPptPrevBar) dom.btnPptPrevBar.onclick = () => dom.btnPptPrev.click();
 
   // 课堂工具
   tmBind();
@@ -1896,6 +2488,23 @@ function bindUI() {
   dom.btnVVolUp.onclick = () => window.api.invoke('video:control', 'volUp');
   dom.btnVVolDown.onclick = () => window.api.invoke('video:control', 'volDown');
   dom.btnVWin.onclick = () => window.api.invoke('video:windowToggle');
+  bindVideoProgress();
+  bindPptRail();
+
+  // 图片投放：上一张 / 下一张 / 自动轮播
+  dom.btnIPrev.onclick = () => window.api.invoke('video:control', 'prev');
+  dom.btnINext.onclick = () => window.api.invoke('video:control', 'next');
+  dom.btnIAuto.onclick = () => window.api.invoke('video:control', 'auto');
+  dom.btnIWin.onclick = () => window.api.invoke('video:windowToggle');
+
+  // 投屏目标屏：手动固定到某一块（0 = 交回智能识别）
+  dom.dispSelect.onchange = async (e) => {
+    const r = await window.api.invoke('displays:select', Number(e.target.value) || 0);
+    if (!r || !r.ok) { toast('该屏已不在线，已退回自动识别', 'warn'); renderDispSelect(); return; }
+    state.config.display = { ...(state.config.display || {}), projectionId: Number(e.target.value) || 0 };
+    state.displays = r.displays;
+    renderDisplays();
+  };
 
   // 设置
   dom.btnPickMusicDir.onclick = async () => {
@@ -2519,6 +3128,7 @@ function syncConfigUI() {
   if (dom.setMiniAutoHide) dom.setMiniAutoHide.checked = c.miniAutoHide !== false;
   if (dom.setAutoLaunch) dom.setAutoLaunch.checked = !!c.autoLaunch;
   if (dom.setCastTrustCert) dom.setCastTrustCert.checked = c.castAutoTrustCert !== false;
+  if (dom.setAutoTop) dom.setAutoTop.checked = !(c.display && c.display.autoTopOnPresent === false);
 }
 
 function openSettings() { syncConfigUI(); renderHotkeys(); dom.settingsOverlay.hidden = false; }
@@ -2538,6 +3148,8 @@ async function saveSettings() {
     compatMode: dom.setCompat ? dom.setCompat.checked : false,
     autoLaunch: dom.setAutoLaunch ? dom.setAutoLaunch.checked : false,
     castAutoTrustCert: dom.setCastTrustCert ? dom.setCastTrustCert.checked : true,
+    // display 是对象：config:save 走深合并，只补 autoTopOnPresent，不动 teacherScreenIndex 等既有项
+    display: { autoTopOnPresent: dom.setAutoTop ? dom.setAutoTop.checked : true },
   };
   state.config = await window.api.invoke('config:save', patch);
   engine.crossfade = state.config.crossfadeSeconds;

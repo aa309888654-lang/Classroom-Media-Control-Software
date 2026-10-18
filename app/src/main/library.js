@@ -11,9 +11,14 @@ const PPT_EXT = new Set(['.pptx', '.ppt', '.ppsx']);          // PowerPoint/WPS 
 // 课件库扩展为「各种文档」：PDF/Word/Excel/RTF/WPS/ODF 等 + 图片，均能用系统默认程序打开投屏
 const DOC_EXT = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.odp', '.odt', '.ods', '.rtf', '.wps', '.et', '.dps', '.dpt', '.pot', '.potx', '.potm', '.pptm', '.vsd', '.vsdx', '.txt']);
 const IMG_EXT = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tif', '.tiff', '.svg']);
+const IMG_EXT_ARR = [...IMG_EXT].map((e) => e.slice(1)); // 对话框过滤器用（去点）
 const COURSEWARE_EXT = new Set([...PPT_EXT, ...DOC_EXT, ...IMG_EXT]);
 const COURSEWARE_EXT_ARR = [...COURSEWARE_EXT].map((e) => e.slice(1)); // 对话框过滤器用（去点）
 function isPptExt(ext) { return PPT_EXT.has(String(ext).toLowerCase()); }
+function isImgExt(ext) { return IMG_EXT.has(String(ext).toLowerCase()); }
+// 视频库＝视频 + 图片：老师把课件截图/板书照片丢进同一个文件夹就能在视频板块整屏投放
+const MEDIA_EXT = new Set([...VIDEO_EXT, ...IMG_EXT]);
+const MEDIA_EXT_ARR = [...MEDIA_EXT].map((e) => e.slice(1));
 
 // 库扫描一律走 fs.promises：这些都是跑在主进程事件循环上的目录遍历，
 // 同步版本（readdirSync/statSync）在网络盘/U 盘上会冻结菜单、窗口拖动、全局快捷键与计时 tick。
@@ -85,13 +90,21 @@ function applyOrder(list, order) {
   });
 }
 
+// 视频库：视频 + 图片（kind: 'video' | 'img'）。图片走同一条投放链路，只是播放窗里换成整屏显示，
+// 支持左右翻图与自动轮播——课件截图/板书照片不用再单独转成视频。
 async function scanVideos() {
   const cfg = config.get();
   const out = [];
   if (cfg.videoDir) {
-    const files = await listFiles(cfg.videoDir, VIDEO_EXT);
+    const files = await listFiles(cfg.videoDir, MEDIA_EXT);
     const stats = await Promise.all(files.map((f) => safeStat(f)));
-    files.forEach((f, i) => out.push({ file: f, name: path.basename(f), size: stats[i].size, mtime: stats[i].mtimeMs }));
+    files.forEach((f, i) => out.push({
+      file: f,
+      name: path.basename(f),
+      size: stats[i].size,
+      mtime: stats[i].mtimeMs,
+      kind: isImgExt(path.extname(f)) ? 'img' : 'video',
+    }));
   }
   out.sort((a, b) => b.mtime - a.mtime);
   return applyOrder(out, cfg.videoOrder);
@@ -135,4 +148,4 @@ function pushRecent(kind, file) {
   config.save({ [key]: list });
 }
 
-module.exports = { scanMusic, scanVideos, scanPpts, pushRecent, mergeCategories, applyOrder, AUDIO_EXT, VIDEO_EXT, PPT_EXT, DOC_EXT, IMG_EXT, COURSEWARE_EXT, COURSEWARE_EXT_ARR, isPptExt }; // mergeCategories/applyOrder 导出供测试（GAP-01）
+module.exports = { scanMusic, scanVideos, scanPpts, pushRecent, mergeCategories, applyOrder, AUDIO_EXT, VIDEO_EXT, PPT_EXT, DOC_EXT, IMG_EXT, IMG_EXT_ARR, COURSEWARE_EXT, COURSEWARE_EXT_ARR, MEDIA_EXT, MEDIA_EXT_ARR, isPptExt, isImgExt }; // mergeCategories/applyOrder 导出供测试（GAP-01）

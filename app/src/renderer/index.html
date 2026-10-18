@@ -21,6 +21,7 @@
       <button id="btnCastTop" class="chip" title="无线投屏：同一 WiFi 下，手机/电脑打开网址即可把屏幕投到投影屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 无线投屏</button>
       <button id="btnRemote" class="chip" title="无线遥控：同一 WiFi 下手机/电脑遥控本机；也可用本机遥控另一台电脑"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 遥控</button>
       <button id="btnTools" class="chip on" title="显示/隐藏课堂工具（计时器）"><span class="ico" data-ico="timer" data-ico-size="13"></span> 计时</button>
+      <button id="btnVideo" class="chip on" title="显示/隐藏视频板块"><span class="ico" data-ico="film" data-ico-size="13"></span> 视频</button>
       <button id="btnWelcome" class="chip" title="文字欢迎屏：上 LED 大屏显示欢迎语"><span class="ico" data-ico="party" data-ico-size="13"></span> 欢迎LED</button>
       <button id="btnMode" class="chip" title="切换模式：控制台 ↔ LED投屏"><span class="ico" data-ico="cast" data-ico-size="13"></span> 切到LED投屏</button>
       <button id="btnMini" class="chip" title="迷你模式：极小控制面板，拖到右下角自动隐藏，鼠标靠近浮现"><span class="ico" data-ico="monitor" data-ico-size="13"></span> 迷你</button>
@@ -104,6 +105,17 @@
             <span class="mono" id="pptPageInfo" style="font-size:11px;color:var(--text-dim);flex:1;text-align:center">—</span>
             <button class="btn btn-sm" id="btnPptNext"><span class="ico" data-ico="forward" data-ico-size="13"></span> 下一页</button>
           </div>
+          <!-- 全页缩略图轨道 + 可左右拖动的滑块：选中课件后后台导出全部页，滑块拖到哪就看到哪 -->
+          <div class="ppt-rail-wrap" id="pptRailWrap" hidden>
+            <div class="ppt-rail-head">
+              <span class="card-label" style="margin:0">页面缩略图</span>
+              <span class="hint mono" id="pptRailInfo"></span>
+            </div>
+            <div class="ppt-rail" id="pptRail"></div>
+            <div class="ppt-rail-bar" id="pptRailBar" title="按住滑块左右拖动浏览全部页面；也可以直接滚轮或拖动缩略图">
+              <div class="ppt-rail-thumb" id="pptRailThumb"></div>
+            </div>
+          </div>
           <div class="presenter-strip" id="presenterStrip" style="display:none">
             <div class="ppt-film" id="pptFilm"></div>
             <div class="presenter-notes">
@@ -142,6 +154,12 @@
           </div>
           <div class="card-label" style="margin-top:14px">屏幕助手</div>
           <div class="card-value dim" id="dispInfo">检测显示器中…</div>
+          <div class="form-ctrl" style="margin-top:8px">
+            <span class="form-lbl">投到哪块屏</span>
+            <select id="dispSelect" class="input" title="PPT/视频/计时统一投到这里；默认自动识别外接屏">
+              <option value="0">自动识别（推荐）</option>
+            </select>
+          </div>
           <div class="card-row" id="extendRow">
             <button id="btnExtend" class="btn btn-sm">🖥 一键扩展模式</button>
           </div>
@@ -159,6 +177,15 @@
       </div>
       <div class="card">
         <div class="video-chips" id="videoChips"></div>
+        <div class="video-progress" id="videoProgress" hidden>
+          <span class="vp-time mono" id="videoTimeNow">0:00</span>
+          <div class="vp-track" id="videoSeek" title="按住拖动跳转播放进度">
+            <div class="vp-fill" id="videoFill"></div>
+            <div class="vp-knob" id="videoKnob"></div>
+          </div>
+          <span class="vp-time mono" id="videoTimeAll">0:00</span>
+          <span class="vp-state" id="videoPlayState"></span>
+        </div>
 <div class="card-row video-remote" id="videoRemote" style="display:none">
           <button class="btn btn-sm" id="btnVBack" title="后退10秒"><span class="ico" data-ico="rewind" data-ico-size="13"></span> 10s</button>
           <button class="btn btn-sm" id="btnVToggle"><span class="ico" data-ico="play" data-ico-size="13"></span> 暂停/继续</button>
@@ -166,6 +193,14 @@
           <button class="btn btn-sm" id="btnVVolDown"><span class="ico" data-ico="volume-x" data-ico-size="13"></span> 音量−</button>
           <button class="btn btn-sm" id="btnVVolUp"><span class="ico" data-ico="volume-2" data-ico-size="13"></span> 音量+</button>
           <button class="btn btn-sm" id="btnVWin" title="视频窗口在全屏与窗口模式间切换（窗口模式可拖动/缩放，带进度条）"><span class="ico" data-ico="fullscreen" data-ico-size="13"></span> <span id="btnVWinText">切为窗口</span></button>
+        </div>
+        <!-- 图片投放：左右翻图 + 自动轮播（视频板块同时收图片） -->
+        <div class="card-row video-remote" id="videoImageRemote" style="display:none">
+          <button class="btn btn-sm" id="btnIPrev" title="上一张（←）"><span class="ico" data-ico="skip-back" data-ico-size="13"></span> 上一张</button>
+          <span class="mono" id="imgPageInfo" style="font-size:11px;color:var(--text-dim);flex:1;text-align:center">1 / 1</span>
+          <button class="btn btn-sm" id="btnINext" title="下一张（→）">下一张 <span class="ico" data-ico="skip-forward" data-ico-size="13"></span></button>
+          <button class="btn btn-sm" id="btnIAuto" title="自动轮播：到时间自动翻下一张"><span class="ico" data-ico="reset" data-ico-size="13"></span> <span id="btnIAutoText">自动轮播：关</span></button>
+          <button class="btn btn-sm" id="btnIWin" title="图片在全屏与窗口模式间切换"><span class="ico" data-ico="fullscreen" data-ico-size="13"></span> <span id="btnIWinText">切为窗口</span></button>
         </div>
         <div class="card-actions">
           <button id="btnPickVideo" class="btn"><span class="ico" data-ico="folder" data-ico-size="14"></span> 添加视频</button>
@@ -222,6 +257,12 @@
             <button id="btnMute" class="icon-btn" title="静音 / 取消静音 (F4)"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></button>
             <input id="vol" type="range" min="0" max="100" value="70" />
             <span id="volVal" class="mono vol-val">70%</span>
+          </div>
+          <!-- PPT 翻页：和音乐控制同处一条，放映时才出现（原本埋在投屏卡里，来回够不着） -->
+          <div class="np-flip" id="npFlip" hidden>
+            <button id="btnPptPrevBar" class="icon-btn" data-hk="pptPrev" title="PPT 上一页 (Ctrl+Alt+←)"><span class="ico" data-ico="rewind" data-ico-size="15"></span></button>
+            <span class="mono np-flip-page" id="pptPageBar" title="当前页 / 总页数">—</span>
+            <button id="btnPptNextBar" class="icon-btn" data-hk="pptNext" title="PPT 下一页 (Ctrl+Alt+→)"><span class="ico" data-ico="forward" data-ico-size="15"></span></button>
           </div>
           <button id="btnLoop" class="chip" title="循环模式（点击展开选择）">循环：列表 ▾</button>
         </div>
@@ -340,6 +381,11 @@
           <label>退出放映时</label>
           <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setClosePp" /><i></i></label>
             <span class="form-tip" id="pptCloseTip">同时关闭 PowerPoint/WPS 程序</span></div>
+        </div>
+        <div class="form-row">
+          <label>放映时置顶面板</label>
+          <div class="form-ctrl"><label class="switch"><input type="checkbox" id="setAutoTop" checked /><i></i></label>
+            <span class="form-tip">开始放映 PPT 时<strong>自动把面板置顶</strong>，避免被 PPT 放映窗口盖住点不到按钮；结束放映后自动还原成你原来的置顶状态</span></div>
         </div>
         <div class="form-row">
           <label>快捷键</label>
@@ -522,6 +568,21 @@
   <div id="toasts" class="toasts"></div>
   <div id="osd" class="osd mono" hidden></div>
 
+  <!-- 重命名歌曲（右键曲目行打开；只支持用户曲库里的自定义歌曲） -->
+  <div class="overlay" id="renameOverlay" hidden>
+    <div class="modal" style="width:420px">
+      <div class="modal-head"><h3><span class="ico" data-ico="music" data-ico-size="14"></span> 重命名歌曲</h3></div>
+      <div class="modal-body">
+        <input id="renameInput" class="cat-input" maxlength="80" placeholder="新的歌曲名称" />
+        <p class="form-tip" id="renameTip">扩展名保持不变；只支持你自己曲库文件夹里的歌曲，内置音乐不能改</p>
+      </div>
+      <div class="modal-foot">
+        <button id="btnRenameCancel" class="btn">取消</button>
+        <button id="btnRenameOk" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 通用确认弹层（删除分类等） -->
   <div class="overlay" id="confirmOverlay" hidden>
       <div class="modal" style="width:400px">
@@ -538,6 +599,7 @@
   <script src="assets/vendor/icons.js"></script>
   <script src="assets/castReceiver.js"></script>
   <script src="assets/audioEngine.js"></script>
+  <script src="assets/rail-policy.js"></script>
   <script src="assets/app.js"></script>
 </body>
 </html>

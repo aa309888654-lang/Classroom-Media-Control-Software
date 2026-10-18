@@ -1,7 +1,8 @@
 /* 库缩略图：视频用 ffmpeg 抽帧，PPT 用 PowerPoint COM 导第 1 页（WPS 同理）。
  * 缩略图存 userData/thumbs，文件名带 大小+mtime 做版本 key：
  * 文件没变 → 直接命中缓存（getInit/scan 同步返回）；变了 → 异步重新生成并广播 thumb:ready。
- * 生成走顺序队列（ffmpeg 与 COM 都重，并发无益）；放映 PPT 期间跳过 PPT 缩略图，避免 COM 打扰放映。 */
+ * 生成走顺序队列（ffmpeg 与 COM 都重，并发无益）；放映 PPT 期间**延后** PPT 缩略图请求
+ * （避免 COM 打扰放映），退出放映后由 releaseDeferred() 自动补做 —— 原来这里是直接丢弃且永不重试。 */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -106,31 +107,102 @@ function pptThumb(file) {
 const queue = [];
 let draining = false;
 const pending = new Set(); // kind|file 去重：扫描/导入多次触发不重复排队
+const deferred = new Map(); // 放映中被挡下的 PPT 缩略图请求，等退出放映后补做
+const attempts = new Map(); // kind|file -> 已尝试次数（失败重试用，限次避免无限循环）
+
+const MAX_ATTEMPTS = 2; // 首次 + 1 次重试；再多通常是环境问题，重试无意义
+const RETRY_DELAY_MS = 1500;
+
+// 纯函数：一次缩略图请求该怎么处理。抽出来是为了能单测这三条分支
+// （跳过/延后/入队），不用起 COM、不碰文件系统。
+// 关键修复：原来「放映中」直接 return 丢弃请求且永不重试 → 放映前扫过库的话，
+// 课件芯片和「当前课件」缩略图会一直是占位符，必须切课件/重启才可能补上。
+function planRequest(opts) {
+  const { file, presenting, pendingKey, cachedHit } = opts;
+  if (!file) return { action: 'skip', reason: 'no-file' };
+  if (pendingKey) return { action: 'skip', reason: 'pending' };
+  if (cachedHit) return { action: 'skip', reason: 'cached' };
+  if (presenting) return { action: 'defer', reason: 'presenting' }; // 不限 kind：视频走 ffmpeg，本来可以照跑
+  return { action: 'enqueue', reason: 'ok' };
+}
 
 // onReady(kind, file, thumbPath|'')：主进程把它接到 broadcast('thumb:ready') 上
 function requestThumb(kind, file, onReady) {
-  if (!file || pending.has(`${kind}|${file}`)) return;
-  if (kind === 'ppt' && pptController.getState().presenting) return; // 放映中不打扰 COM
+  // 先把上一轮延后的请求放出来（放映可能已经结束了）
+  if (kind === 'ppt') releaseDeferred();
+  let cachedHit = false;
   // BUG-04：命中缓存直接跳过，否则每次 getInit/scan/openDialog 都全库重跑 ffmpeg/COM
-  try { if (cached(kind, file)) return; } catch { }
-  pending.add(`${kind}|${file}`);
-  queue.push({ kind, file, onReady });
+  try { cachedHit = !!cached(kind, file); } catch { }
+  const plan = planRequest({
+    file,
+    presenting: kind === 'ppt' && pptController.getState().presenting,
+    pendingKey: pending.has(`${kind}|${file}`),
+    cachedHit,
+  });
+  if (plan.action === 'skip') return;
+  if (plan.action === 'defer') { deferred.set(`${kind}|${file}`, { kind, file, onReady }); return; }
+  enqueue({ kind, file, onReady });
+}
+
+function enqueue(item) {
+  const key = `${item.kind}|${item.file}`;
+  pending.add(key);
+  attempts.set(key, attempts.get(key) || 0);
+  queue.push(item);
   drain();
+}
+
+// 退出放映后调用：把放映期间被挡下的 PPT 缩略图补做掉（原来这些请求直接丢了，永不重试）
+function releaseDeferred() {
+  if (!deferred.size) return;
+  if (pptController.getState().presenting) return; // 还在放映，继续等
+  const items = [...deferred.values()];
+  deferred.clear();
+  for (const it of items) {
+    try { if (!cached(it.kind, it.file)) enqueue(it); } catch { }
+  }
 }
 
 async function drain() {
   if (draining) return;
   draining = true;
-  while (queue.length) {
-    const { kind, file, onReady } = queue.shift();
-    pending.delete(`${kind}|${file}`);
-    let thumb = '';
-    try {
-      thumb = kind === 'video' ? await videoThumb(file) : await pptThumb(file);
-    } catch { thumb = ''; }
-    if (thumb) onReady(kind, file, thumb);
+  try {
+    while (queue.length) {
+      const { kind, file, onReady } = queue.shift();
+      const key = `${kind}|${file}`;
+      pending.delete(key);
+      // 排队期间可能已经生成好了（同一批里重复请求）
+      let done = false;
+      try { done = !!cached(kind, file); } catch { }
+      let thumb = done ? cached(kind, file) : '';
+      if (!thumb) {
+        try {
+          thumb = kind === 'video' ? await videoThumb(file) : await pptThumb(file);
+        } catch { thumb = ''; }
+      }
+      if (thumb) {
+        attempts.delete(key);
+        // onReady 是广播回调，包 try：它抛异常不能把整个队列带死
+        try { onReady(kind, file, thumb); } catch { }
+        continue;
+      }
+      // 失败：限次重试（COM 偶发失败、文件正被占用等）。仍失败就不再刷，避免空转。
+      const n = (attempts.get(key) || 0) + 1;
+      if (n < MAX_ATTEMPTS) {
+        attempts.set(key, n);
+        const t = setTimeout(() => { pending.delete(key); enqueue({ kind, file, onReady }); }, RETRY_DELAY_MS);
+        if (t.unref) t.unref();
+        continue;
+      }
+      attempts.delete(key);
+      // 彻底失败：广播空串，让渲染层知道「这个真的没图」而不是无声无息一直占位
+      try { onReady(kind, file, ''); } catch { }
+    }
+  } finally {
+    // 必须放 finally：原来这里直接赋值，任何一处抛异常都会让 draining 永久为 true，
+    // 之后所有缩略图请求全部静默卡死（整个会话都不再补图）。
+    draining = false;
   }
-  draining = false;
 }
 
 // 批量入队（列表来自 scanVideos/scanPpts）
@@ -144,4 +216,4 @@ function killAll() {
   liveKids.clear();
 }
 
-module.exports = { cached, requestMany, cachePath, killAll }; // cachePath 导出仅供测试（BUG-03 回归防线）
+module.exports = { cached, requestMany, cachePath, killAll, releaseDeferred, planRequest }; // cachePath/planRequest 导出仅供测试

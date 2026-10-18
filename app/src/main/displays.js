@@ -1,24 +1,66 @@
 const { screen } = require('electron');
 const { execFile } = require('child_process');
 const fs = require('fs');
+const config = require('./config');
+
+// ---------- 投影屏「智能识别」 ----------
+// 规则（先精确后模糊）：
+// 1) 用户在面板上手动选过（display.projectionId）且那块屏还在线 → 听用户的
+// 2) 否则在非主屏里优先挑「非内置屏」（笔记本自带屏 internal=true 不可能是投影），
+//    多块外接屏时取分辨率面积最大的那块（投影仪/电视通常最大）
+// 3) 一块副屏都没有 → 回退主屏（单屏 LED 场景）
+function projectionDisplay() {
+  const all = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  if (all.length <= 1) return primary;
+  const pref = Number(config.get().display && config.get().display.projectionId) || 0;
+  if (pref) {
+    const hit = all.find((d) => d.id === pref);
+    if (hit) return hit;
+  }
+  const others = all.filter((d) => d.id !== primary.id);
+  const external = others.filter((d) => d.internal === false); // Electron 老版本无 internal，退化为「取面积最大」
+  const pool = external.length ? external : others;
+  return pool.slice().sort((a, b) => (b.bounds.width * b.bounds.height) - (a.bounds.width * a.bounds.height))[0] || primary;
+}
+
+// 供主进程下发给 PowerShell：把放映窗口搬到目标屏时需要「点 ↔ 像素」比例校准，
+// 而校准必须以「某块屏的像素矩形」为基准，所以整块列表都传过去
+function displayTable() {
+  const primary = screen.getPrimaryDisplay();
+  return screen.getAllDisplays().map((d) => ({
+    id: d.id,
+    x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height,
+    scale: d.scaleFactor || 1,
+    internal: !!d.internal,
+    primary: d.id === primary.id,
+  }));
+}
+
+function targetIndex() {
+  const d = projectionDisplay();
+  return displayTable().findIndex((x) => x.id === d.id);
+}
 
 function listDisplays() {
   const primaryId = screen.getPrimaryDisplay().id;
+  const targetId = projectionDisplay().id;
   return screen.getAllDisplays().map((d, i) => ({
     index: i,
     id: d.id,
     isPrimary: d.id === primaryId,
-    isProjection: d.id !== primaryId,
+    isProjection: d.id === targetId, // 「投影屏」= 当前智能识别/用户指定的投屏目标
+    internal: !!d.internal, // 笔记本自带屏：智能识别时会被排除
     bounds: d.bounds,
-    label: `${d.bounds.width}×${d.bounds.height}${d.id === primaryId ? ' · 主屏(教师)' : ' · 副屏(投影)'}`,
+    scaleFactor: d.scaleFactor || 1,
+    label: `${d.bounds.width}×${d.bounds.height}${d.id === primaryId ? ' · 主屏(教师)' : (d.id === targetId ? ' · 投影屏' : ' · 副屏')}`,
   }));
 }
 
-// 第二显示器（投影屏）；单屏则回退主屏
-function projectionDisplay() {
+// 有没有能投的外接屏（内置屏不算：一块屏时“投到投影屏”没有意义）
+function hasExternal() {
   const primary = screen.getPrimaryDisplay();
-  const others = screen.getAllDisplays().filter((d) => d.id !== primary.id);
-  return others[0] || primary;
+  return screen.getAllDisplays().some((d) => d.id !== primary.id && d.internal === false);
 }
 
 // 一键把 Windows 切到扩展显示模式；带结果校验：
@@ -37,4 +79,4 @@ async function extendMode({ verifyMs = 3000 } = {}) {
   return { ok: false, error: 'no-second-display', count: screen.getAllDisplays().length };
 }
 
-module.exports = { listDisplays, projectionDisplay, extendMode };
+module.exports = { listDisplays, projectionDisplay, extendMode, displayTable, targetIndex, hasExternal };

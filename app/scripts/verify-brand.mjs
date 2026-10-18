@@ -23,5 +23,5 @@ console.log('stSite =', await ev('document.getElementById("stSite").textContent'
 console.log('brand-name =', await ev('document.querySelector(".brand-name").textContent'));
 console.log('topbar logo src =', (await ev('document.querySelector(".topbar .logo").src')).slice(0, 64));
 console.log('document.title =', await ev('document.title'));
-console.log('badhost 拒绝 =', JSON.stringify(await ev('window.api.invoke("app:openExternal", "https://evil.example.com/"')));
+console.log('badhost 拒绝 =', JSON.stringify(await ev('window.api.invoke("app:openExternal", "https://evil.example.com/")')));
 process.exit(0);

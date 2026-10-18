@@ -3,11 +3,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 const INVOKE_CHANNELS = new Set([
   'app:getInit', 'app:quit', 'app:openExternal', 'app:copyText',
   'config:save',
-  'library:scan', 'library:deleteFile',
-  'displays:list', 'displays:extend',
+  'library:scan', 'library:deleteFile', 'music:renameTrack',
+  'displays:list', 'displays:extend', 'displays:select',
   'office:detect',
   'ppt:openDialog', 'ppt:present', 'ppt:exit', 'ppt:status', 'ppt:next', 'ppt:prev', 'ppt:goto', 'ppt:preopen', 'ppt:exportAll',
-  'video:openDialog', 'video:play', 'video:stop', 'video:control', 'video:notifyEnded', 'video:windowToggle',
+  'video:openDialog', 'video:play', 'video:stop', 'video:control', 'video:notifyEnded', 'video:windowToggle', 'video:seek',
   'timer:start', 'timer:toggle', 'timer:reset', 'timer:toggleShow', 'timer:state', 'timer:winFullscreen', 'timer:escExit',
   'music:setState',
   'music:playable',
@@ -23,7 +23,7 @@ const INVOKE_CHANNELS = new Set([
 ]);
 
 const EVENT_CHANNELS = new Set([
-  'hotkey', 'ppt:state', 'ppt:presenter', 'video:state', 'toast', 'displays:changed', 'video:load', 'video:control', 'video:windowmode', 'music:restore', 'timer:tick', 'timer:finished', 'cast:status', 'cast:state', 'welcome:state', 'import:progress', 'thumb:ready', 'ppt:pages', 'peer:list', 'peer:connected',
+  'hotkey', 'ppt:state', 'ppt:presenter', 'video:state', 'toast', 'displays:changed', 'video:load', 'video:control', 'video:windowmode', 'video:progress', 'music:restore', 'timer:tick', 'timer:finished', 'cast:status', 'cast:state', 'welcome:state', 'import:progress', 'thumb:ready', 'ppt:pages', 'peer:list', 'peer:connected', 'window:alwaysOnTop',
 ]);
 
 contextBridge.exposeInMainWorld('api', {

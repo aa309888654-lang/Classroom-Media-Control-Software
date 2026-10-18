@@ -5,7 +5,9 @@
   [string]$Close = 'true',
   [string]$ExportDir = '',
   [string]$Page = '0',                                  # goto：目标页码（1 起）；thumb：导出页码（默认 1）
-  [string]$NoExport = ''                                # presenter：'true'=只读已缓存缩略图、不现场导图（放映翻页期保 PowerPoint 主线程，PERF-12）
+  [string]$NoExport = '',                               # presenter：'true'=只读已缓存缩略图、不现场导图（放映翻页期保 PowerPoint 主线程，PERF-12）
+  [string]$Displays = '',                               # start：JSON 数组 [{x,y,w,h,scale,primary}]，用于把放映窗口定位到目标屏
+  [int]$TargetIndex = -1                                # start：目标屏在 Displays 里的下标（-1=不搬，沿用 PowerPoint 自己那套）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,9 +66,62 @@ function Get-NotesText($pres, [int]$page) {
   return $txt
 }
 
+# 把幻灯片放映窗口搬到指定的那块屏（老师要的是「投到扩展屏」，而 PowerPoint 默认只认主屏）。
+# 难点：SlideShowWindow 的 Left/Top/Width/Height 单位是「点」，跟调用方给的像素不是 1:1
+# （还叠加每屏 DPI 缩放）。这里不做任何硬编码换算，而是拿放映窗口当前的尺寸 ÷ 它所在屏的
+# 像素尺寸反推比例，再按比例把目标屏换算过去；搬完读回校验，PowerPoint 若不接受全屏窗
+# 的新位置（部分版本），就退回「窗口模式按目标屏尺寸定位」，画面照样铺满投影屏。
+function Move-ShowToDisplay($sw, $displays, $idx) {
+  if (-not $displays -or $displays.Count -le 1) { return @{ ok = $true; reason = 'single-display' } }
+  if ($idx -lt 0 -or $idx -ge $displays.Count) { return @{ ok = $false; reason = 'no-target' } }
+  $t = $displays[$idx]
+
+  $swW = 0.0; $swH = 0.0; $full = $false
+  try {
+    $swW = [double]$sw.Width; $swH = [double]$sw.Height; $full = ($sw.IsFullScreen -ne 0)
+  } catch { }
+  if ($swW -le 0 -or $swH -le 0) { return @{ ok = $false; reason = 'no-show-size' } }
+
+  # 找放映窗口当前落在哪块屏：按宽高比最接近的一块（主屏与投影同分辨率时按顺序取到主屏）
+  $src = $null; $best = 1e9
+  $ar = $swW / $swH
+  foreach ($d in $displays) {
+    if ([double]$d.h -le 0) { continue }
+    $diff = [Math]::Abs(([double]$d.w / [double]$d.h) - $ar)
+    if ($diff -lt $best) { $best = $diff; $src = $d }
+  }
+  if (-not $src) { return @{ ok = $false; reason = 'no-src-display' } }
+
+  $kx = $swW / [double]$src.w
+  $ky = $swH / [double]$src.h
+  $nx = [Math]::Round([double]$t.x * $kx); $ny = [Math]::Round([double]$t.y * $ky)
+  $nw = [Math]::Round([double]$t.w * $kx); $nh = [Math]::Round([double]$t.h * $ky)
+
+  $mode = 'fullscreen'
+  $tol = [Math]::Max(6, $nw * 0.02)
+  try { $sw.Left = $nx; $sw.Top = $ny; $sw.Width = $nw; $sw.Height = $nh } catch { }
+  $moved = $false
+  try {
+    $moved = ([Math]::Abs([double]$sw.Left - $nx) -le $tol) -and ([Math]::Abs([double]$sw.Width - $nw) -le $tol)
+  } catch { }
+
+  if (-not $moved) {
+    # 兜底：退全屏 → 按目标屏尺寸定位成「窗口放映」，PowerPoint 各版本都吃这套
+    $mode = 'windowed'
+    try {
+      $sw.IsFullScreen = 0
+      $sw.Left = $nx; $sw.Top = $ny; $sw.Width = $nw; $sw.Height = $nh
+      $moved = $true
+    } catch {
+      return @{ ok = $false; reason = 'move-refused'; x = $nx; y = $ny; w = $nw; h = $nh }
+    }
+  }
+  return @{ ok = $true; reason = 'moved'; mode = $mode; x = $nx; y = $ny; w = $nw; h = $nh; ratio = [Math]::Round($kx, 4) }
+}
+
 # 执行单个动作，返回 hashtable（不直接输出/退出，方便一次性与常驻两种模式复用）
 # 注意：本函数与常驻模式共用，失败一律以 ok=$false 返回，不用 exit 表达失败
-function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [string]$Pg, [string]$Ne = '') {
+function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [string]$Pg, [string]$Ne = '', [string]$Dsp = '', [int]$Tgt = -1) {
   try {
     switch ($A) {
 
@@ -98,7 +153,18 @@ function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [strin
         # Run() 返回 SlideShowWindow 对象，PowerShell 会隐式输出一大段属性转储污染 stdout，
         # 常驻服务模式下甚至会导致进程异常退出，必须显式吞掉
         $null = $pres.SlideShowSettings.Run()
-        return @{ ok = $true; progId = $usedId; action = 'start' }
+        # 出画面后立刻把放映窗口搬到目标屏（默认只有主屏是「有画面」的那块）
+        $show = $null
+        try {
+          $dispList = $null
+          if ($Dsp) { try { $dispList = $Dsp | ConvertFrom-Json } catch { } }
+          if ($dispList -and $dispList.Count -gt 1) {
+            $sw = $null
+            try { $sw = $app.SlideShowWindows.Item(1) } catch { }
+            if ($sw) { $show = Move-ShowToDisplay $sw $dispList $Tgt }
+          }
+        } catch { $show = @{ ok = $false; reason = 'move-error' } }
+        return @{ ok = $true; progId = $usedId; action = 'start'; show = $show }
       }
 
       'preopen' {
@@ -175,6 +241,12 @@ function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [strin
         if (-not $P -or -not (Test-Path -LiteralPath $P)) {
           return @{ ok = $false; error = 'file-not-found'; detail = $P }
         }
+        # 输出目录必须存在才能 Export。presenter 分支有这道校验，exportall 原来没有：
+        # 目录不存在时 Join-Path 拼出的路径写不进去，Export 逐页抛异常被 catch 吞掉，
+        # 结果是「ok=true、exported=0」，面板永远等不到图也看不出原因。
+        if (-not $Exp -or -not (Test-Path -LiteralPath $Exp -PathType Container)) {
+          return @{ ok = $false; error = 'export-dir-missing'; detail = $Exp }
+        }
         $app = $null; $created = $false; $pres = $null; $opened = $false
         $found = Get-RunningApp
         if ($found) { $app = $found.App }
@@ -191,21 +263,33 @@ function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [strin
         }
         if (-not $app) { return @{ ok = $false; error = 'no-office-com' } }
         try {
-          try {
-            $pres = $app.Presentations.Open($P, -1, 0, 0)
-            $opened = $true
-          } catch {
-            try {
-              $full = (Resolve-Path -LiteralPath $P).Path
-              foreach ($p2 in $app.Presentations) { if ($p2.FullName -eq $full) { $pres = $p2; break } }
-            } catch { }
+          # 已被打开过（多半是 preopen 预热的「只读 + 无窗口」实例）就直接复用，不再 Open：
+          # Open 对同一文件返回的是同一份演示文稿对象，此时若在 finally 里 Close，
+          # 会把「一键放映秒开」的热身关掉，放映又得等 PowerPoint 重新读盘打开文件。
+          $full = $null
+          try { $full = (Resolve-Path -LiteralPath $P).Path } catch { }
+          if ($full) {
+            foreach ($p2 in $app.Presentations) {
+              try { if ($p2.FullName -ieq $full) { $pres = $p2; break } } catch { }
+            }
           }
-          if (-not $pres) { return @{ ok = $false; error = 'open-failed'; detail = $P } }
+          if (-not $pres) {
+            # 原来这里 try{}catch{} 完全吞掉 Open 的异常，只回一句 open-failed，
+            # 面板和主进程都拿不到真实原因（文件占用 / COM 代理失效 / 格式不支持），
+            # 只能看到「ok=false, error=open-failed」无从下手。把异常文本带回去。
+            $openErr = ''
+            try {
+              $pres = $app.Presentations.Open($P, -1, 0, 0)
+              $opened = $true
+            } catch { $openErr = $_.Exception.Message }
+            if (-not $pres) { return @{ ok = $false; error = 'open-failed'; detail = $openErr; path = $P } }
+          }
           $sw = 960.0; $sh = 540.0
           try { $sw = [double]$pres.PageSetup.SlideWidth; $sh = [double]$pres.PageSetup.SlideHeight } catch { }
           $outH = if ($sw -gt 0) { [Math]::Max(1, [Math]::Round(320 * $sh / $sw)) } else { 180 }
           $count = 0
           $aborted = $false
+          $exportErr = ''
           foreach ($s2 in $pres.Slides) {
             # 老师点了一键放映 → 立刻停导：Export 与幻灯片渲染抢 PowerPoint 主线程，
             # 放映期间继续导图每页翻动都卡（PERF-12）。已导页按页缓存，下次选中再补。
@@ -218,10 +302,14 @@ function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [strin
             } catch { }
             $img = Join-Path $Exp ("page-{0}.png" -f $s2.SlideIndex)
             if (-not (Test-Path -LiteralPath $img)) {
-              try { $s2.Export($img, 'PNG', 320, $outH); $count++ } catch { }
+              # 原来这里是空 catch：COM 导出失败（如 PowerPoint 卡死/文件被占用）会被完全吞掉，
+              # 表现为主进程拿到 ok=true、exported=0，面板只看到「导出中 0 页」而查不出原因。
+              # 记下第一页的异常文本带回主进程，面板才能提示「导出失败」而不是干等。
+              try { $s2.Export($img, 'PNG', 320, $outH); $count++ }
+              catch { if (-not $exportErr) { $exportErr = $_.Exception.Message } }
             }
           }
-          return @{ ok = $true; action = 'exportall'; total = $pres.Slides.Count; exported = $count; aborted = $aborted }
+          return @{ ok = $true; action = 'exportall'; total = $pres.Slides.Count; exported = $count; aborted = $aborted; error = $exportErr }
         } finally {
           # 因放映中断：这份文稿可能正在全屏放映，Close/Quit 会把老师的放映干掉，原样留着（release/shutdown 会收）
           if (-not $aborted) {
@@ -449,7 +537,9 @@ if ($Action -eq '-server') {
     $close = 'true'; if ($req.close) { $close = [string]$req.close }
     $page = '0'; if ($req.page) { $page = [string]$req.page }
     $ne = ''; if ($req.noexport) { $ne = [string]$req.noexport }
-    $r = Invoke-Action ([string]$req.action) ([string]$req.path) $close ([string]$req.exportDir) $page $ne
+    $dsp = ''; if ($req.displays) { $dsp = [string]$req.displays }
+    $tgt = -1; if ($null -ne $req.targetIndex) { try { $tgt = [int]$req.targetIndex } catch { $tgt = -1 } }
+    $r = Invoke-Action ([string]$req.action) ([string]$req.path) $close ([string]$req.exportDir) $page $ne $dsp $tgt
     $out = @{ seq = [int]$req.seq }
     if ($r) { foreach ($k in $r.Keys) { $out[$k] = $r[$k] } }
     Out-Json $out
@@ -458,7 +548,7 @@ if ($Action -eq '-server') {
 }
 
 # 一次性模式（保留：server 不可用时的回退路径，行为与旧版一致）
-$r = Invoke-Action $Action $Path $Close $ExportDir $Page $NoExport
+$r = Invoke-Action $Action $Path $Close $ExportDir $Page $NoExport $Displays $TargetIndex
 Out-Json $r
 if (-not $r.ok) { exit 1 }
 exit 0

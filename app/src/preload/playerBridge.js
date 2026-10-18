@@ -1,8 +1,8 @@
 /* 视频投放窗专用桥（SEC-07）：只暴露视频播放相关通道，不共享面板全量桥（最小权限） */
 const { contextBridge, ipcRenderer } = require('electron');
 
-const INVOKE = new Set(['video:notifyEnded', 'video:windowToggle']);
-const EVENTS = new Set(['video:load', 'video:control']);
+const INVOKE = new Set(['video:notifyEnded', 'video:windowToggle', 'video:progress', 'video:control']);
+const EVENTS = new Set(['video:load', 'video:control', 'video:seek', 'video:windowmode', 'video:auto']);
 
 contextBridge.exposeInMainWorld('api', {
   invoke(channel, payload) {

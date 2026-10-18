@@ -116,6 +116,9 @@ async function exec(action, params = {}, timeoutMs = 6000, channel = 'ctl') {
     exportDir: params.exportDir || '',
     page: String(params.page || 0),
     noexport: params.noexport ? 'true' : '',
+    // start 专用：目标屏定位（把放映窗口搬到扩展屏，见 ppt-control.ps1 的 Move-ShowToDisplay）
+    displays: params.displays || '',
+    targetIndex: Number.isInteger(params.targetIndex) ? params.targetIndex : -1,
   });
   return new Promise((resolve) => {
     const proc = s.proc; // 固定本次请求对应的进程，超时只杀它，不误伤已重建的新进程
@@ -156,4 +159,18 @@ function close() {
   }
 }
 
-module.exports = { exec, warmup, close };
+// 丢弃某个通道的常驻进程，让下次 exec 用全新进程（= 全新 COM 上下文）重建。
+// 用于自愈：常驻进程里缓存的 PowerPoint COM 代理一旦失效（PowerPoint 被杀/崩过），
+// 后续 SlideShowWindows / Presentations.Open 会持续抛错或挂死，只有换进程才恢复得回来。
+function resetChannel(channel = 'ctl') {
+  const s = servers[channel];
+  if (!s) return false;
+  for (const [, p] of s.pending) { clearTimeout(p.timer); p.resolve(null); }
+  s.pending.clear();
+  if (s.proc) { try { s.proc.kill(); } catch { } s.proc = null; }
+  s.ready = false;
+  s.starting = null;
+  return true;
+}
+
+module.exports = { exec, warmup, close, resetChannel };

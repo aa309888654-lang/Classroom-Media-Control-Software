@@ -47,3 +47,27 @@ test('cached：命中返回路径，未命中返回空串', () => {
   assert.strictEqual(thumbs.cached('video', f), p, '已生成应命中');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* ---- 排队策略：放映中的 PPT 缩略图请求必须「延后」而不是「丢弃」 ----
+ * 回归缺陷：原来 requestThumb 在放映中直接 return，请求既不入队也不记账，
+ * 放映结束后永远不会补做 → 课件芯片/「当前课件」缩略图一直是占位符，
+ * 必须切课件或重启应用才可能恢复。 */
+test('planRequest：放映中必须延后（defer），不能丢弃', () => {
+  const r = thumbs.planRequest({ file: 'a.pptx', presenting: true, pendingKey: false, cachedHit: false });
+  assert.strictEqual(r.action, 'defer', '放映中要延后，交给 releaseDeferred 补做');
+});
+
+test('planRequest：非放映时才入队', () => {
+  const r = thumbs.planRequest({ file: 'a.pptx', presenting: false, pendingKey: false, cachedHit: false });
+  assert.strictEqual(r.action, 'enqueue');
+});
+
+test('planRequest：已排队/已命中缓存/无文件都跳过', () => {
+  assert.strictEqual(thumbs.planRequest({ file: 'a.pptx', presenting: true, pendingKey: true, cachedHit: false }).action, 'skip');
+  assert.strictEqual(thumbs.planRequest({ file: 'a.pptx', presenting: true, pendingKey: false, cachedHit: true }).action, 'skip');
+  assert.strictEqual(thumbs.planRequest({ file: '', presenting: false, pendingKey: false, cachedHit: false }).reason, 'no-file');
+});
+
+test('releaseDeferred：不在放映中时调用不抛错（延后队列为空应直接返回）', () => {
+  assert.doesNotThrow(() => thumbs.releaseDeferred());
+});

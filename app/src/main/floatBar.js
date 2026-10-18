@@ -45,6 +45,9 @@ function create() {
   win.loadFile(path.join(__dirname, '..', 'renderer', 'floatbar.html'));
   win.webContents.on('did-finish-load', () => { if (!win || win.isDestroyed()) return; win.showInactive(); }); // 不抢焦点
   win.on('closed', () => { win = null; });
+  // 窗口隐藏时停掉轮询（无窗口可检测，空转浪费 CPU）
+  win.on('hide', () => stopPoll());
+  win.on('show', () => { if (!pollTimer) startPoll(); });
 }
 
 // 展开/收起：改窗口尺寸并通知页面切换 UI 态
@@ -57,9 +60,13 @@ function setOpen(open) {
   win.webContents.send('floatbar:open', open);
   // 页面侧通过 body.open class 切换；用 executeJavaScript 免 IPC 往返
   win.webContents.executeJavaScript(`document.body.classList.toggle('open', ${open})`).catch(() => { });
+  // 展开时立刻重置隐藏计时，避免展开后立刻又收起
+  if (open) hideAt = Date.now() + HIDE_DELAY;
 }
 
-// 光标轮询：靠近右下角展开，离开按钮区一段时间后收起
+// 光标轮询：靠近右下角展开，离开按钮区一段时间后收起。
+// 低频 500ms（原 300ms）：getCursorScreenPoint 在 Win32 上是阻塞调用，
+// 高频轮询会让老机器在 PPT 全屏放映期间持续掉帧。
 function startPoll() {
   stopPoll();
   pollTimer = setInterval(() => {
@@ -75,7 +82,8 @@ function startPoll() {
     } else if (open_ && Date.now() > hideAt) {
       setOpen(false);
     }
-  }, 300);
+  }, 500);
+  if (pollTimer.unref) pollTimer.unref(); // 不拖住进程退出
 }
 function stopPoll() { clearInterval(pollTimer); pollTimer = null; }
 
@@ -84,6 +92,8 @@ function open(actions) {
   if (!win || win.isDestroyed()) create();
   else { win.showInactive(); }
   open_ = false;
+  // 先确保旧轮询已停，避免叠加
+  stopPoll();
   startPoll();
 }
 

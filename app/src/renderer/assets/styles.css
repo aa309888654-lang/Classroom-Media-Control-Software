@@ -224,6 +224,8 @@ body.media-splitting { cursor: col-resize; }
 [data-panel="video"] .card .video-chips { flex: 1; min-height: 140px; max-height: none; overflow-y: auto; align-content: flex-start; align-items: flex-start; }
 [data-panel="video"] .card-actions { margin-top: 11px; }
 .media-row.section-dragging { opacity: 0.55; outline: 1px dashed var(--accent-2); }
+/* 视频板块隐藏（顶栏「视频」按钮）：视频板与分隔条一并收起，音乐板独占整行 */
+body.video-hidden [data-panel="video"], body.video-hidden .media-splitter { display: none; }
 
 .panel-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; cursor: grab; user-select: none; }
 .panel-head:active { cursor: grabbing; }
@@ -351,6 +353,8 @@ body.section-drag-active .panel-head { cursor: grabbing; }
 .t-eq i { width: 3px; height: 5px; border-radius: 1.5px; background: var(--accent); animation: eqSm 0.9s ease-in-out infinite; }
 .t-eq i:nth-child(2) { animation-delay: 0.25s; background: var(--accent-2); }
 .t-eq i:nth-child(3) { animation-delay: 0.5s; }
+/* 暂停时均衡条停止跳动（只保留静止柱状） */
+.cat-track.paused .t-eq i { animation: none; height: 5px; }
 @keyframes eqSm { 0%, 100% { height: 4px; } 50% { height: 13px; } }
 
 /* 面板头「＋添加音乐」开关按钮 */
@@ -397,6 +401,8 @@ body.section-drag-active .panel-head { cursor: grabbing; }
 .playing .np-eq i { animation: eq 0.9s ease-in-out infinite; }
 .playing .np-eq i:nth-child(2) { animation-delay: 0.25s; background: var(--accent-2); }
 .playing .np-eq i:nth-child(3) { animation-delay: 0.5s; }
+/* 暂停时均衡条停止跳动 */
+.now-playing.paused .np-eq i { animation: none; }
 @keyframes eq { 0%, 100% { height: 6px; } 50% { height: 19px; } }
 .np-text { min-width: 0; }
 .np-track {
@@ -406,6 +412,19 @@ body.section-drag-active .panel-head { cursor: grabbing; }
 .np-cat { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
 
 .np-controls { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+/* PPT 翻页组：与音乐控制同处播放条，放映时出现；左侧竖线区分两组操作 */
+.np-flip {
+  display: flex; align-items: center; gap: 6px;
+  padding-left: 11px; margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+.np-flip[hidden] { display: none; }
+.np-flip .np-flip-page {
+  min-width: 42px; text-align: center; font-size: 11px;
+  color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#btnPptPrevBar, #btnPptNextBar { color: var(--accent); border-color: rgba(38, 128, 235, 0.35); }
+#btnPptPrevBar:hover, #btnPptNextBar:hover { border-color: var(--accent); background: var(--accent-soft); }
 .icon-btn {
   width: 36px; height: 36px; border-radius: 9px; font-size: 13px;
   background: var(--card); border: 1px solid var(--border); color: var(--text);
@@ -455,9 +474,11 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 #confirmOverlay .modal .modal-foot .btn-danger { flex: 1.6; font-weight: 700; font-size: 16px; }
 
 /* ---------- 卡片与按钮 ---------- */
-.grid-2 { display: grid; grid-template-columns: 1.8fr 1fr; gap: 10px; } /* PPT 卡片放大、右侧卡缩小 */
-.grid-2.single { grid-template-columns: 1fr; } /* 课堂工具隐藏时 PPT 卡占满整行 */
-@media (max-width: 980px) { .grid-2 { grid-template-columns: 1fr; } }
+/* minmax(0, …)：栅格轨道的最小值必须是 0，否则轨道会被卡片里的宽内容（缩略图轨道/芯片行）
+ * 按 min-content 撑爆，整块面板跟着横向溢出。 */
+.grid-2 { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr); gap: 10px; } /* PPT 卡片放大、右侧卡缩小 */
+.grid-2.single { grid-template-columns: minmax(0, 1fr); } /* 课堂工具隐藏时 PPT 卡占满整行 */
+@media (max-width: 980px) { .grid-2 { grid-template-columns: minmax(0, 1fr); } }
 .card {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; padding: 11px 13px;
@@ -572,6 +593,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .video-chip .v-name { font-size: 11.5px; padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .video-chip .v-size { font-family: var(--mono); font-size: 9px; color: var(--text-faint); margin-top: 1px; padding: 0 3px; }
 .video-chip.playing { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); }
+/* 图片：整屏投放，不是视频，卡片上加一点区分（青蓝描边 + 角标） */
+.video-chip.is-img .v-thumb { background: #0d1b24; }
+.video-chip.is-img .v-size { color: var(--accent); }
 /* 课件库芯片：与视频芯片同风格 */
 .ppt-chips { display: flex; flex-wrap: wrap; gap: 7px; min-height: 20px; max-height: 300px; overflow-y: auto; padding-right: 4px; margin-top: 8px; }
 .ppt-chips::-webkit-scrollbar { width: 6px; }
@@ -614,6 +638,30 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   border: 1px dashed rgba(38, 128, 235, 0.3);
   border-radius: 9px; padding: 7px 9px;
 }
+
+/* 视频进度条：视频播在投影屏上，控制面板里同步显示进度并支持拖动跳转 */
+.video-progress { display: flex; align-items: center; gap: 9px; margin: 9px 0 1px; }
+.video-progress[hidden] { display: none; }
+.vp-track {
+  flex: 1; min-width: 0; height: 6px; border-radius: 4px; background: #2a3545;
+  cursor: pointer; position: relative; touch-action: none;
+  transition: height 0.15s var(--ease);
+}
+.vp-track:hover, .vp-track.dragging { height: 8px; }
+.vp-fill { height: 100%; width: 0%; background: var(--grad); border-radius: 4px; transition: width 0.35s linear; }
+.vp-track.dragging .vp-fill { transition: none; }
+.vp-knob {
+  position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; margin: -7px 0 0 -7px;
+  border-radius: 50%; background: #fff; border: 2px solid var(--accent);
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.45); opacity: 0; pointer-events: none;
+  transition: opacity 0.15s var(--ease);
+}
+.vp-track:hover .vp-knob, .vp-track.dragging .vp-knob { opacity: 1; }
+.vp-time { font-size: 11px; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vp-state { font-size: 10px; color: var(--text-faint); white-space: nowrap; min-width: 48px; text-align: right; }
+body.roomy .video-progress { gap: 12px; }
+body.roomy .vp-track { height: 8px; }
+body.roomy .vp-time { font-size: 12.5px; }
 
 /* ---------- 状态栏 ---------- */
 .statusbar {
@@ -881,6 +929,41 @@ body.manage-mode .cat-item { outline: 1px dashed var(--border-strong); outline-o
 .ppt-film-item:hover img { border-color: var(--accent); filter: brightness(1.12); }
 .ppt-film-item.cur img { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .ppt-film-num { position: absolute; right: 3px; bottom: 3px; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 5px; background: rgba(0, 0, 0, 0.6); color: #fff; pointer-events: none; }
+/* 放映中缩略图还没生成出来时的空态说明（原来是一个无提示的空框，看着像坏了） */
+.film-empty { flex: 1 1 auto; padding: 14px 10px; text-align: center; font-size: 11.5px; color: var(--text-dim); border: 1px dashed var(--border); border-radius: 6px; }
+
+/* 全页缩略图轨道 + 滑块：拖滑块 = 左右翻看整份课件的页面 */
+.ppt-rail-wrap { margin-top: 11px; }
+.ppt-rail-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.ppt-rail {
+  position: relative; /* 缩略图的 offsetLeft 以轨道为基准，自动跟随滚动才准 */
+  display: flex; align-items: flex-start; gap: 6px;
+  overflow-x: auto; overflow-y: hidden; padding: 2px 2px 6px;
+  scrollbar-width: none; -ms-overflow-style: none; /* 用自绘滑块代替系统滚动条 */
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: pan-x;
+}
+.ppt-rail::-webkit-scrollbar { display: none; }
+.ppt-rail.dragging { cursor: grabbing; }
+.ppt-rail-item { flex: 0 0 auto; width: 96px; min-height: 54px; position: relative; cursor: pointer; }
+.ppt-rail-item img {
+  width: 100%; height: auto; display: block;
+  border: 1px solid var(--border); border-radius: 6px; background: #000;
+}
+.ppt-rail-item:hover img { border-color: var(--accent); filter: brightness(1.12); }
+.ppt-rail-item.cur img { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.ppt-rail-item.off { cursor: default; }
+.ppt-rail-bar {
+  position: relative; height: 10px; margin-top: 1px; border-radius: 5px;
+  background: rgba(255, 255, 255, 0.09); cursor: pointer; touch-action: none;
+}
+.ppt-rail-bar:hover { background: rgba(255, 255, 255, 0.14); }
+.ppt-rail-thumb {
+  position: absolute; top: 0; left: 0; height: 100%; min-width: 30px; border-radius: 5px;
+  background: var(--accent); opacity: 0.7; transition: opacity 0.15s var(--ease);
+}
+.ppt-rail-bar:hover .ppt-rail-thumb, .ppt-rail-bar.dragging .ppt-rail-thumb { opacity: 1; }
+body.roomy .ppt-rail-item { width: 132px; }
+body.roomy .ppt-rail-bar { height: 13px; }
 .presenter-notes { flex: 1; min-width: 0; }
 
 .notes-text { font-size: 12px; color: var(--text-dim); max-height: 76px; overflow-y: auto; white-space: pre-wrap; user-select: text; margin-top: 3px; }
@@ -903,6 +986,7 @@ body.compat-mode .topbar, body.compat-mode .statusbar { background: rgba(22, 22,
 body.compat-mode .panel, body.compat-mode .modal, body.compat-mode .toast { box-shadow: none; }
 body.compat-mode .icon-btn.primary, body.compat-mode .mini-btn.primary, body.compat-mode .ci-play { box-shadow: none; }
 body.compat-mode .np-eq i, body.compat-mode .t-eq i { animation: none; }
+body.compat-mode .dot.busy { animation: none; }
 body.compat-mode .panel { animation: none; }
 body.compat-mode .cat-item, body.compat-mode .btn, body.compat-mode .chip,
 body.compat-mode .video-chip, body.compat-mode .ppt-chip, body.compat-mode .icon-btn,

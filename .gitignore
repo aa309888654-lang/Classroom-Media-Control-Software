@@ -14,8 +14,6 @@ build/
 
 # Sensitive / secrets
 密钥/
-# 音乐暂存区：只是导入 app/resources/music/ 前的素材副本（内容重复，不入库）
-音乐/
 *.key
 *.pem
 *.p12
@@ -44,6 +42,7 @@ Thumbs.db
 
 # Assets not needed in repo
 LED背景/
+音乐/
 77ff2f5f-faea-4542-998c-ac1101b4cf8d.png
 *.png
 !app/resources/icon.png

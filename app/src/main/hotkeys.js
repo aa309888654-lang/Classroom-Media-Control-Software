@@ -39,6 +39,7 @@ const MEDIA_KEYS = { VolumeMute: 'mute', VolumeDown: 'volDown', VolumeUp: 'volUp
 
 // 注册全局快捷键；返回冲突清单 [{action, accelerator}]
 function registerAll(onAction) {
+  onActionRef = onAction; // 直接初始化回调引用，避免注册期间媒体键无响应
   try { globalShortcut.unregisterAll(); } catch { }
   const conflicts = [];
   const hotkeys = config.get().hotkeys;
@@ -52,11 +53,31 @@ function registerAll(onAction) {
   }
   if (process.platform === 'win32') {
     for (const [acc, action] of Object.entries(MEDIA_KEYS)) {
-      try { globalShortcut.register(acc, () => onAction(action)); } catch { }
+      try { globalShortcut.register(acc, () => onActionRef && onActionRef(action)); } catch { }
     }
   }
   return conflicts;
 }
+
+// PPT 放映时音量键不注册（让系统原生处理，控制 PPT 内嵌视频音量）
+// 退出放映时恢复注册
+let mediaKeysRegistered = true;
+let onActionRef = null;
+function setMediaKeysEnabled(enabled) {
+  if (enabled === mediaKeysRegistered) return;
+  mediaKeysRegistered = enabled;
+  if (process.platform !== 'win32') return;
+  if (enabled) {
+    for (const [acc, action] of Object.entries(MEDIA_KEYS)) {
+      try { globalShortcut.register(acc, () => onActionRef && onActionRef(action)); } catch { }
+    }
+  } else {
+    for (const acc of Object.keys(MEDIA_KEYS)) {
+      try { globalShortcut.unregister(acc); } catch { }
+    }
+  }
+}
+function setActionHandler(fn) { onActionRef = fn; }
 
 // 改键：先注销旧的，注册成功才落盘
 function remap(action, accelerator, onAction) {
@@ -82,4 +103,4 @@ function remap(action, accelerator, onAction) {
   return { ok: true, accelerator };
 }
 
-module.exports = { registerAll, remap, ACTION_KEYS };
+module.exports = { registerAll, remap, ACTION_KEYS, setMediaKeysEnabled, setActionHandler };

@@ -54,16 +54,22 @@ const DEFAULTS = {
   loopMode: 'list', // 'list' | 'single' | 'once'
   uiDensity: 'compact', // 'compact' | 'roomy'
   displayMode: 'control', // 'control' | 'led'
-  catOrder: ['开课音乐'], // 分类卡片排序（长按拖动后持久化）；默认「开课音乐」在第一组
+  catOrder: ['开学组', '开课音乐'], // 分类卡片排序（长按拖动后持久化）；默认「开学组」「开课音乐」在前两组
   catShowLimit: 3,   // 分类歌单默认只显示前 3 个分类；0=全部显示，N=只显示排序后的前 N 个（歌单栏 ＋/− 可调，最少 1）
   mediaSplit: 0.41,  // 音视频并列行：视频列占比（分隔条拖动后持久化，0.25~0.75）
   mediaSplitV: 300,  // 音视频上下堆叠（窄窗口）时视频区高度 px（分隔条拖动后持久化）
   toolsVisible: true, // 投屏面板右侧的课堂工具卡是否显示（顶栏「工具」按钮切换）
+  videoVisible: true, // 视频板块是否显示（顶栏「视频」按钮切换；隐藏后音乐板占满整行）
   catPinned: {}, // 每个分类置顶的曲目（决定默认显示的前三首）
   catTrackOrder: {}, // 每个分类内曲目的手工排序（长按拖动后持久化）
   sectionOrder: [],  // 主面板板块顺序（长按板块标题拖动后持久化）；空 = 默认（投屏/视频/音乐/课堂工具）
   windowBounds: null, // 记忆窗口位置尺寸
-  display: { teacherScreenIndex: 0, forceExtendOnPresent: true },
+  display: {
+    teacherScreenIndex: 0,
+    projectionId: 0, // 投屏目标屏：0=智能识别（外接屏中挑一块）；>0=用户手动指定，拔掉后自动退回智能识别
+    forceExtendOnPresent: true,
+    autoTopOnPresent: true,
+  }, // autoTopOnPresent：放映 PPT 时自动把面板置顶（挡 PPT 全屏/主窗口），退出放映后还原
   office: { prefer: 'auto' }, // 'auto' | 'powerpoint' | 'wps'
   exitAction: { restoreMusic: true, closePowerpoint: false }, // 退出放映只退全屏，不关闭 PowerPoint/WPS 程序（可在设置里改）
   hotkeysVer: 7, // 快捷键方案版本；升级即重置为当前默认（V7：Win 音量键改为裸 F4/F5/F6）
@@ -77,6 +83,8 @@ const DEFAULTS = {
   miniAutoHide: true, // 迷你面板贴在屏幕右下角时自动隐藏，鼠标靠近浮现
   miniBounds: null,  // 迷你模式的窗口位置尺寸（与正常 windowBounds 分开记忆）
   videoWindowed: false, // 视频播放形态：true=窗口模式（可拖动/缩放），false=全屏投放
+  imageAutoPlay: false, // 图片投放：自动轮播（下一张自动接上）
+  imageAutoSeconds: 5,  // 自动轮播每张停留秒数
   compatMode: false, // 兼容模式：禁用 GPU 硬件加速（老旧一体机花屏/文字乱码时开启，重启生效）
   autoLaunch: false, // 开机自启（GAP-02：教室一体机开机即进课堂，无需手动双击）
   castAutoTrustCert: true, // 投屏自签证书自动装入 Windows 当前用户根证书存储（SEC-03：默认开保持免提示；可在设置中关闭）
