@@ -1,6 +1,68 @@
 # 修改记录（Change Log）
 
-## [未发布] - 2024-01-XX
+## [2026.10.19] - 2026-10-18
+
+### 🐛 Bug 修复
+
+**混合 DPI 下投屏落错屏（多屏 + 各屏缩放比不同）**
+- **问题描述**：多屏且各屏缩放比不同（如 4K@150% 主屏 + 2K@100% 副屏）时，PPT 放映窗口落到错误的屏幕或位置偏移。根因有两层：
+  1. 全屏放映时 `SlideShowWindow.Left/Top/Width/Height` 报的是**幻灯片尺寸**（恒为 16:9 固定值）而非窗口尺寸，设值完全无效
+  2. 按「宽高比最接近反推源屏」选目标屏，在混合 DPI 下 4K@150% 与 2K@100% 在 DIP 空间里都是 2560×1440，必然认错
+- **修复方案**：放弃 COM 坐标搬运，改用 Win32 `SetWindowPos` 直接搬放映窗口 HWND
+  - `EnumWindows` 按 class `screenClass` 找放映窗（`FindWindowEx` 顺链在该机匹配不到），面积取最大、`-gt` 保留 Z 序上层窗
+  - `MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)` + `GetMonitorInfo` 直接问系统「窗口落在哪块屏」
+  - 搬完回读校验：退出全屏 → `SetWindowPos` 到目标屏物理矩形 → 回读 → 重新置全屏
+  - 进程启动即声明 `PER_MONITOR_AWARE_V2`，否则 `GetWindowRect` 返回被系统虚拟化过的坐标
+- **修改文件**：`src/main/displays.js`、`src/main/index.js`、`resources/ppt-control.ps1`
+- **Commit**：`227617a`
+- **实机验证**：双屏环境两方向复测 —— 副屏 `finalX=3840 finalW=2560 finalH=1440`、主屏 `finalX=0 finalW=3840 finalH=2160`；另用独立校验器（系统 API 直接读放映窗物理矩形与所在显示器矩形）确认 `RECT_EXACT_MATCH=True` / `MONITOR_MATCH=True`
+
+#### 2026-10-20 全面检查发现并修复的缺陷
+
+本轮做了一次全量代码审查（独立审查 + 逐条回源码复核），修掉 3 项严重 + 7 项一般缺陷。全部为**行为修复**，未改动任何对外接口。
+
+| 严重度 | 缺陷 | 根因 | 修复 |
+|---|---|---|---|
+| 严重 | **投屏上传超限：半成品残留 + 写流 fd 不关**（局域网可达，token 在落地页就下发） | `req.destroy()` 不带 error 参数时，pipe 的 dest 既收不到 `'end'` 也收不到 `'error'` → 写流的 `'finish'`/`'close'` 都不触发（Node v24 实测：只有请求侧 `REQ_CLOSE`），那段「把半成品清掉」的清理代码是**死代码** | 超限分支显式 `out.destroy()` + `fs.rmSync`；补 `req.on('close')` 处理客户端中途断开；`out.on('close')` 改为「没走完 finish 就是半成品，一律清掉」 |
+| 严重 | **413 响应送不到客户端** | `req.destroy()` = 立刻 RST 整个 socket，把刚写出的 413 一起冲掉 → 客户端只看到 `ECONNRESET`（"socket hang up"），用户看到的是无意义的网络错误而不是「文件太大」 | 响应声明 `Connection: close`，收尾改用优雅 FIN（`socket.end()`）而非 RST |
+| 严重 | **config.json 非原子写 + 损坏后静默归零** | 直接 `writeFileSync` 覆写，写盘中途断电/被杀会留下半截 JSON；下次启动 `load()` 的 catch 静默换成 `DEFAULTS`，用户的目录/快捷键/音量一次性全丢且毫无提示 | 改成「写 `.tmp` + `rename`」原子写；每次保存留一份 `.bak`；`load()` 解析失败先回落 `.bak`，两条路都失败也必须弹提示 |
+| 一般 | **macOS 转码与视频缩略图全链路失效** | `resolveFfmpeg()` 四处候选路径全部硬编码 `ffmpeg.exe`，而 ffmpeg-static 非 win32 产物名无后缀 → macOS 上恒返回 null | 按平台取名（`ffmpeg.exe` / `ffmpeg`） |
+| 一般 | **渲染层错误上报功能整个是死的** | 渲染层 `invoke('log:error')`，但 preload 白名单里没有该通道（被 reject 后又被 `.catch(()=>{})` 吞掉），主进程也没有 `ipcMain.handle` | 补 preload 白名单 + 主进程 handler，转发到 `logFatal` |
+| 一般 | **老师手动关放映后，媒体音量键永久失效** | `handleShowGone()` 没恢复媒体键（正常退出走 `exitPresent()` 会恢复） | `handleShowGone()` 补 `setMediaKeysEnabled(true)` |
+| 一般 | **被拒绝的起播先空烧一遍转码** | 拦截判断在转码之后 → 放映中点 MKV 会先跑完整片转码（最长 10 分钟），还把产物落进用户媒体库 | 拦截判断提到转码分支之前 |
+| 一般 | **含 `#` 的文件名缩略图永久裂图** | `encodeURI` 不转义 `#`（保留字符），`教学#1.mp4` 被当成 fragment | `fileUrl_` 与 `audioEngine.fileUrl` 统一补 `#`→`%23`、`?`→`%3F` |
+| 一般 | **计时器窗口孤儿竞态** | `win.on('closed')` 无条件 `win = null`；`close()` 的 `'closed'` 是异步的，期间再建 W2 会被 W1 的回调清空引用 → W2 永远关不掉 | 闭包捕获窗口实例，只清自己的引用 |
+| 一般 | **macOS 每次放映白起一个注定失败的 powershell.exe** | `pptServer.warmup(['thumb'])` 缺 `IS_MAC` 守卫（另一处预热调用有） | 补 `IS_MAC` 守卫 |
+| 一般 | **PowerShell stderr 无人消费** | `spawn` 默认三条管道，stderr 没人读 → 写满管道缓冲会阻塞子进程，表现为「控制 PowerPoint 偶发卡死」 | 排空 stderr（只排空不解析） |
+
+#### 复验阶段新发现并修复的缺陷
+
+| 严重度 | 缺陷 | 根因 | 修复 |
+|---|---|---|---|
+| 严重 | **渲染层 `init()` 每次启动都抛 `ReferenceError`，品牌/版本/平台 UI 全部不生效** | `const d = await ipcInvoke('app:getInit')` 声明在 `try` 块内，而函数末尾 `dom.stVer.textContent = \`v${d.version}\`` 在块外 → 块级作用域 → 抛错 → `init()` 在最后几行中断 | 声明提到 try 外（`let d = null;`）。实际影响：`applyBrand()` 从不执行 → 品牌 logo/名称/版本/官网/赞助全是 HTML 里的静态占位；`state.brand` 恒为 null → 官网/赞助点击静默失效；`applyPlatformUI()` 与快捷键冲突提示不执行 |
+| 一般 | **状态栏版本号永远是 `v0.1.0`** | `applyBrand()` 用品牌资产里的 `version` 覆盖状态栏，而品牌包里的 `version` 是创建时写死的占位值 `"0.1.0"`，从未跟着版本迭代 | `applyBrand()` 不再覆盖状态栏版本号（状态栏显示应用版本，由 `init()` 写入） |
+| — | **CDP 真实点击在「页面被误判遮挡」时静默失效**（测试基础设施缺陷，非产品回归） | Chromium 在混合 DPI + 多屏下 occlusion 判定算错：窗口可见、未最小化、`hasFocus=true`，但 `document.visibilityState='hidden'` → rAF 不跑（坐标轮询永久挂起）+ 真实点击被丢弃 | `app/scripts/xtest/cdp.mjs`：`attach()` 里开 `Emulation.setFocusEmulationEnabled`；`centerOf()` 返回值加 `hitOk`（用 `elementFromPoint` 校验点击是否落在目标上） |
+
+> 前两条是同一条链上的两段：前一条让 `applyBrand()` 根本不执行（状态栏停在 HTML 静态占位 `v0.1.0`）；
+> 修好之后 `applyBrand()` 开始执行，又用品牌陈旧版本把它盖回 `v0.1.0`——**只修一段看不出效果**。
+> 这两条能被捞出来，靠的是本轮打通的渲染层错误上报通道：主进程 `userData/logs/main-error.log` 里
+> 立刻出现了那条启动期异常（该通道原先被 preload 白名单拦掉，上报功能整个是死的）。
+
+**新增回归测试 5 项**（单测 62 → 67）
+- `config.test.js`：原子写后内容合法 + 有 `.bak` + 无残留 `.tmp`；配置损坏回落 `.bak`；配置损坏且无备份时重置默认并留下错误记录
+- `uploadLimit.test.js`（新建）：真实 HTTP + 真实文件写入走完整路径 —— 超限回 413 **且磁盘不留半成品**；正常上传仍成功（对照组）
+
+**未改**：品牌解密的 PBKDF2 轮数。迭代数与 `brand.data.js` 密文绑定，改轮数必须重新加密品牌资产，风险大于收益；改异步也无实际收益（该阶段没有并发工作，await 后总启动时间不变）。本机实测 210000 轮耗时 **96.6ms**。
+
+### 🧪 测试
+
+- ✅ 单元测试 **67/67**（62 项原有 + 5 项新增回归）
+- ✅ CDP 全面功能测试 61/61、新增功能专项 35/35、PPT 缩略图链路 6/6
+- ✅ 产物完整性核验：46 个源文件与 `app.asar` 逐字节一致，版本一致
+
+---
+
+## [2026.10.17] - 2026-10-18
 
 ### 📌 本轮改动速览（2026-10-17）
 
@@ -10,7 +72,7 @@
 |---|---|---|---|
 | 1 | 视频播到投影屏，面板看不到进度 | 控制面板新增视频进度条（时间/播放态/可拖动跳转） | ✅ 实机验证 |
 | 2 | PPT 放映找不到第 40 页 | 新增全页缩略图轨道 + 可左右拖动的滑块，点缩略图直接跳页 | ✅ 实机验证（70 页课件） |
-| 3 | 切扩展模式后 PPT 没投到扩展屏 | 智能识别投影屏 + 面板可手动指定 + PowerPoint 放映窗口定位到该屏（带校验回退） | ⚠️ 代码完成，本机只有 1 块屏，双屏场景待复验 |
+| 3 | 切扩展模式后 PPT 没投到扩展屏 | 智能识别投影屏 + 面板可手动指定 + PowerPoint 放映窗口定位到该屏（带校验回退） | ✅ 实机验证（双屏；2026.10.19 改用 Win32 搬屏后，副屏/主屏两方向精确铺满） |
 | 4 | 视频板块不支持图片 | 媒体库同收图片：整屏投放 + 左右翻图 + 自动轮播 | ✅ 实机验证 |
 
 > 验证环境：开发实例 `electron.exe . --remote-debugging-port=9235`，跑在**隔离 userData**（`%LOCALAPPDATA%\Temp\xt-verify-userdata`），
@@ -46,14 +108,14 @@
 - **修复方案**：在 `registerAll()` 函数中直接初始化 `onActionRef = onAction`，消除时序空窗
 - **影响范围**：启动流程
 - **修改文件**：`src/main/hotkeys.js`
-- **Commit**：`d48619e`
+- **Commit**：`a598085`
 
 **放映失败时音量键状态不一致**
 - **问题描述**：PPT 放映失败时未恢复音量键控制音乐引擎，导致失败后重试时音量键行为混乱
 - **修复方案**：在 `presentPpt()` 失败分支添加 `hotkeys.setMediaKeysEnabled(true)` 恢复音量键
 - **影响范围**：PPT 放映流程
 - **修改文件**：`src/main/index.js`
-- **Commit**：`d48619e`
+- **Commit**：`a598085`
 
 **导出全页缩略图会把预热课件关掉**
 - **问题描述**：`exportall` 无条件 `Close()`，若课件已被 `preopen` 以只读无窗口方式打开，会把热身的演示文稿关掉，「一键放映秒开」退回秒级
@@ -71,14 +133,14 @@
 - **修复方案**：删除死代码，保留防御性检查并记录警告日志
 - **影响范围**：音量控制逻辑
 - **修改文件**：`src/renderer/assets/app.js`
-- **Commit**：`d4665d9`
+- **Commit**：`a598085`
 
 **增强空指针保护说明**
 - **问题描述**：`onMusicState()` 中 `querySelectorAll` 未显式说明安全性
 - **修复方案**：添加注释说明空 NodeList 的 forEach 安全性
 - **影响范围**：音乐播放状态更新
 - **修改文件**：`src/renderer/assets/app.js`
-- **Commit**：`d4665d9`
+- **Commit**：`a598085`
 
 ---
 
@@ -141,7 +203,7 @@
   - 显示友好的用户提示
 - **收益**：避免白屏崩溃，便于问题排查
 - **修改文件**：`src/renderer/assets/app.js`
-- **Commit**：`d4665d9`
+- **Commit**：`a598085`
 
 **IPC 超时保护**
 - **功能描述**：封装 `ipcInvoke()` 函数，为 IPC 调用添加 10 秒超时保护
@@ -149,7 +211,7 @@
 - **应用场景**：已应用到初始化流程（`app:getInit`）
 - **收益**：避免主进程卡死导致渲染进程永久等待
 - **修改文件**：`src/renderer/assets/app.js`
-- **Commit**：`d4665d9`
+- **Commit**：`a598085`
 
 ---
 
@@ -171,7 +233,7 @@
 - 放映的是另一份课件时，缩略图轨道还停在「选中的那份」，点缩略图会跳错页 → 主进程放映中改为只回「已缓存页」，渲染层轨道跟随 `state.ppt.file`，并把 presenter 的 5 页窗口合并进轨道
 
 **单元测试状态**
-- ✅ 所有 45 项测试通过
+- ✅ 所有 62 项测试通过
 - ✅ 无回归问题
 - ✅ 测试覆盖：castServer, config, hotkeys, library, peerPresence, pptServer, remoteControl, thumbnail
 
@@ -288,11 +350,14 @@ if (state.ppt.presenting) {
 
 ## Git 提交记录
 
+> 说明：以下两轮改动的原始 commit（`d48619e` / `d4665d9`）在当前仓库历史中不存在，
+> 相关改动已合并进 `a598085`，此处按实际所在提交标注。
+
 ### Commit 1: Phase 2 严重问题修复
 ```
-commit d48619e
+commit a598085
 Author: aa309888654-lang
-Date:   2024-01-XX
+Date:   2026-10-18
 
 fix(hotkeys): 修复初始化时序与放映失败时音量键状态不一致
 
@@ -301,7 +366,7 @@ fix(hotkeys): 修复初始化时序与放映失败时音量键状态不一致
 - index.js: 放映失败时确保音量键恢复控制音乐引擎
 
 Fixes: P1-1, P1-2 (OPTIMIZATION_PLAN.md Phase 2)
-Tests: 45/45 passed
+Tests: 62/62 passed
 
 Changed files:
   src/main/hotkeys.js | 1 +
@@ -310,9 +375,9 @@ Changed files:
 
 ### Commit 2: Phase 3 稳定性增强
 ```
-commit d4665d9
+commit a598085
 Author: aa309888654-lang
-Date:   2024-01-XX
+Date:   2026-10-18
 
 refactor(renderer): 增强稳定性与错误处理
 
@@ -323,7 +388,7 @@ refactor(renderer): 增强稳定性与错误处理
 - app.js: 初始化流程应用 IPC 超时保护
 
 Fixes: P2-1, P2-2, P2-3, P2-4 (OPTIMIZATION_PLAN.md Phase 3)
-Tests: 45/45 passed
+Tests: 62/62 passed
 
 Changed files:
   src/renderer/assets/app.js | 80 ++++++++++++++++++++++++++++++++++++-
@@ -393,14 +458,12 @@ Changed files:
 如遇问题可快速回滚：
 
 ```bash
-# 回滚到 Phase 2 之前
-git revert d4665d9 d48619e
+# 回滚到 Phase 2 之前（Phase 2/3 改动同属 a598085，需按行选择）
+git revert --no-commit a598085
+git commit -m "revert: 回退 Phase 2/3 改动"
 
-# 或单独回滚 Phase 3
-git revert d4665d9
-
-# 或单独回滚 Phase 2
-git revert d48619e
+# 或只回滚 Phase 3 的渲染层改动（--no-commit 后手动挑选 hunk）
+git revert --no-commit a598085
 ```
 
 ---
@@ -470,7 +533,7 @@ git revert d48619e
 ---
 
 **文档版本**：v1.0  
-**最后更新**：2024-01-XX  
+**最后更新**：2026-10-18  
 **维护者**：开发团队
 
 ---

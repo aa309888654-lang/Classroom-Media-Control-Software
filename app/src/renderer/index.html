@@ -167,6 +167,45 @@
       </div>
     </section>
 
+    <!-- 正在播放条：全局状态/控制条（当前曲目 + 进度条 + 音量 + 循环 + 放映翻页）。
+         原来放在音乐板 section 内部，被 .media-row 的窄列挤到约 423px，
+         控制区必然折行（条高从 94px 涨到 147px），而且默认窗口下位于首屏之外。
+         移出来独占整行后：内容实际需要约 707px（.np-meta 最小 230 + .np-controls 465 + gap），
+         整行宽度足够，控制区不再折行，翻页控件也始终在首屏附近。 -->
+    <div class="now-playing">
+      <div class="np-meta">
+        <div class="np-eq" id="npEq"><i></i><i></i><i></i></div>
+        <div class="np-text">
+          <div class="np-track" id="nowTrack">未在播放</div>
+          <div class="np-cat" id="nowCat">选择一个分类开始播放</div>
+        </div>
+      </div>
+      <div class="np-controls">
+        <button id="btnPrev" class="icon-btn" data-hk="prev" title="上一首 (Ctrl+F3)"><span class="ico" data-ico="previous" data-ico-size="16"></span></button>
+        <button id="btnPlay" class="icon-btn primary" data-hk="playPause" title="播放/暂停 (Ctrl+F6)"><span class="ico" data-ico="play" data-ico-size="18"></span></button>
+        <button id="btnNext" class="icon-btn" data-hk="next" title="下一首 (Ctrl+F7)"><span class="ico" data-ico="next" data-ico-size="16"></span></button>
+        <div class="vol-wrap">
+          <button id="btnMute" class="icon-btn" title="静音 / 取消静音 (F4)"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></button>
+          <input id="vol" type="range" min="0" max="100" value="70" />
+          <span id="volVal" class="mono vol-val">70%</span>
+        </div>
+        <!-- PPT 翻页：和音乐控制同处一条，放映时才出现（原本埋在投屏卡里，来回够不着） -->
+        <div class="np-flip" id="npFlip" hidden>
+          <button id="btnPptPrevBar" class="icon-btn" data-hk="pptPrev" title="PPT 上一页 (Ctrl+Alt+←)"><span class="ico" data-ico="rewind" data-ico-size="15"></span></button>
+          <span class="mono np-flip-page" id="pptPageBar" title="当前页 / 总页数">—</span>
+          <button id="btnPptNextBar" class="icon-btn" data-hk="pptNext" title="PPT 下一页 (Ctrl+Alt+→)"><span class="ico" data-ico="forward" data-ico-size="15"></span></button>
+        </div>
+        <button id="btnLoop" class="chip" title="循环模式（点击展开选择）">循环：列表 ▾</button>
+      </div>
+      <div class="np-bottom">
+        <div class="np-progress" id="npProgress" style="display:none" title="点击或按住拖动跳转播放进度">
+          <div class="np-progress-fill" id="npFill"></div>
+          <div class="np-knob" id="npKnob"></div>
+        </div>
+        <span class="np-time mono" id="npTime" style="display:none">0:00 / 0:00</span>
+      </div>
+    </div>
+
     <!-- ============ 音视频行：视频与音乐并列（窄窗口自动堆叠），整行可拖动排序 ============ -->
     <div class="media-row">
       <!-- ============ 视频 ============ -->
@@ -241,39 +280,6 @@
         </div>
       </div>
 
-      <div class="now-playing">
-        <div class="np-meta">
-          <div class="np-eq" id="npEq"><i></i><i></i><i></i></div>
-          <div class="np-text">
-            <div class="np-track" id="nowTrack">未在播放</div>
-            <div class="np-cat" id="nowCat">选择一个分类开始播放</div>
-          </div>
-        </div>
-        <div class="np-controls">
-          <button id="btnPrev" class="icon-btn" data-hk="prev" title="上一首 (Ctrl+F3)"><span class="ico" data-ico="previous" data-ico-size="16"></span></button>
-          <button id="btnPlay" class="icon-btn primary" data-hk="playPause" title="播放/暂停 (Ctrl+F6)"><span class="ico" data-ico="play" data-ico-size="18"></span></button>
-          <button id="btnNext" class="icon-btn" data-hk="next" title="下一首 (Ctrl+F7)"><span class="ico" data-ico="next" data-ico-size="16"></span></button>
-          <div class="vol-wrap">
-            <button id="btnMute" class="icon-btn" title="静音 / 取消静音 (F4)"><span class="ico" data-ico="volume-2" data-ico-size="15"></span></button>
-            <input id="vol" type="range" min="0" max="100" value="70" />
-            <span id="volVal" class="mono vol-val">70%</span>
-          </div>
-          <!-- PPT 翻页：和音乐控制同处一条，放映时才出现（原本埋在投屏卡里，来回够不着） -->
-          <div class="np-flip" id="npFlip" hidden>
-            <button id="btnPptPrevBar" class="icon-btn" data-hk="pptPrev" title="PPT 上一页 (Ctrl+Alt+←)"><span class="ico" data-ico="rewind" data-ico-size="15"></span></button>
-            <span class="mono np-flip-page" id="pptPageBar" title="当前页 / 总页数">—</span>
-            <button id="btnPptNextBar" class="icon-btn" data-hk="pptNext" title="PPT 下一页 (Ctrl+Alt+→)"><span class="ico" data-ico="forward" data-ico-size="15"></span></button>
-          </div>
-          <button id="btnLoop" class="chip" title="循环模式（点击展开选择）">循环：列表 ▾</button>
-        </div>
-        <div class="np-bottom">
-          <div class="np-progress" id="npProgress" style="display:none" title="点击或按住拖动跳转播放进度">
-            <div class="np-progress-fill" id="npFill"></div>
-            <div class="np-knob" id="npKnob"></div>
-          </div>
-          <span class="np-time mono" id="npTime" style="display:none">0:00 / 0:00</span>
-        </div>
-      </div>
     </section>
     </div>
     <!-- ============ /音视频行 ============ -->

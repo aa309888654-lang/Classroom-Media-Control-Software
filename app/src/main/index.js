@@ -95,11 +95,13 @@ function toast(text, type = 'info') {
 // 配置写盘失败（磁盘满/只读/杀软锁文件）必须让用户看见，否则等于静默丢配置。
 // 节流 3s：拖动窗口等高频 save 可能连续失败，只提示一次。
 let cfgErrToastAt = 0;
-config.onSaveError((msg) => {
+config.onSaveError((msg, kind) => {
   const now = Date.now();
   if (now - cfgErrToastAt < 3000) return;
   cfgErrToastAt = now;
-  toast(`设置未能保存（${msg}），请检查磁盘空间或权限`, 'error');
+  // kind='load'：配置损坏、已回落备份或重置默认（不是写盘失败，文案要分开）
+  if (kind === 'load') toast(msg, 'error');
+  else toast(`设置未能保存（${msg}），请检查磁盘空间或权限`, 'error');
 });
 
 // 置顶的「固定」语义：面板浮在放映软件（PPT 全屏等）之上，老师随时够得着控制按钮。
@@ -362,6 +364,12 @@ async function handleShowGone() {
   sm.mode = 'idle';
   floatBar.close(); // 老师手动退了放映：悬浮条一并收掉
   applyAutoTopOnPresent(false); // 同上：自动置顶也要还原
+  // 放映时媒体音量键被注销了（交还系统去控制 PPT 内嵌视频音量）。
+  // 正常退出走 exitPresent() 会恢复；老师「手动关掉 PowerPoint」走的是这里，
+  // 原来没有恢复 → 笔记本实体静音/减音量/加音量键对音乐永久失灵，
+  // 直到下一次「放映→正常退出」才恢复（F4/F5/F6 不受影响，它们是独立注册的全局键）。
+  // 2026-10-20 全面检查发现。
+  if (process.platform === 'win32') hotkeys.setMediaKeysEnabled(true);
   broadcast('ppt:state', { presenting: false, file: '', loading: false });
   releaseDeferredThumbs(); // 同上：手动退出也要放行延后的缩略图
 }
@@ -483,7 +491,9 @@ async function presentPpt(file) {
   else floatBar.close();
   if (result.ok) {
     noteFlip(); // 开播即进入翻页静默期：头几百毫秒不导图，让幻灯片渲染独占主线程
-    pptServer.warmup(['thumb']); // 提前拉起 thumb 常驻进程：首轮 presenter 不再冷启动 PowerShell（GAP-07 按需策略只留给未放映场景）
+    // macOS 没有 PowerShell COM 链路，pptServer 在 mac 上只会白起一个注定 ENOENT 的子进程，
+    // 再等一次 5s readyTimer。平台守卫与 :1516 的预热调用保持一致。
+    if (!IS_MAC) pptServer.warmup(['thumb']); // 提前拉起 thumb 常驻进程：首轮 presenter 不再冷启动 PowerShell（GAP-07 按需策略只留给未放映场景）
     pollPresenter(); // 开播后立刻拉一次演讲者信息（页码/胶片/备注），免等 2s 轮询
     // PPT 放映时音量键交还系统（控制 PPT 内嵌视频音量），不再截给音乐引擎
     if (process.platform === 'win32') hotkeys.setMediaKeysEnabled(false);
@@ -647,6 +657,15 @@ async function playVideoFile(file) {
     return { ok: false, error: 'file-not-found' };
   }
   const ext = path.extname(file).toLowerCase();
+  // 拦截必须放在转码之前（2026-10-20 全面检查发现）：
+  // 原来先对冷门格式跑完整片转码（最长 10 分钟）再判断是否在放映，
+  // 于是「一次被拒绝的起播」会先空烧一遍 CPU/磁盘，还把转码产物落进用户媒体库，
+  // 每被拒一次库里就多一份 xxx.mp4 / xxx (1).mp4。
+  if (pptController.getState().presenting) {
+    toast('PPT 正在放映，请先退出投屏再播视频', 'warn');
+    return { ok: false, error: 'ppt-presenting' };
+  }
+  if (sm.mode === 'ppt') return { ok: false, error: 'ppt-presenting' };
   // 图片：直接整屏投放，不转码（课件截图/板书照片走视频板块）
   if (library.isImgExt(ext)) {
     // 图片走下面的统一投放路径（LED 内联 / 扩展屏整屏 + 翻图轮播）
@@ -663,11 +682,6 @@ async function playVideoFile(file) {
     file = t.file;
     toast(`「${label}」已转码为 MP4，下次点播即播`, 'ok');
   }
-  if (pptController.getState().presenting) {
-    toast('PPT 正在放映，请先退出投屏再播视频', 'warn');
-    return { ok: false, error: 'ppt-presenting' };
-  }
-  if (sm.mode === 'ppt') return { ok: false, error: 'ppt-presenting' };
   const ledMode = config.get().displayMode === 'led';
   if (ledMode) {
     const r = videoWindow.playInline(file);
@@ -698,6 +712,18 @@ async function playVideoFile(file) {
 }
 
 function registerIpc() {
+  // 渲染层未捕获异常/未处理 Promise 拒绝 → 落到主进程错误日志。
+  // 原来渲染层调 invoke('log:error')，但 preload 白名单里没有这个通道（被 reject 后又被
+  // .catch(()=>{}) 吞掉），主进程也没有 ipcMain.handle → 错误上报功能整个是死的，
+  // 现场只剩一句「程序遇到错误」没有任何堆栈留痕。
+  // 2026-10-20 全面检查发现并补齐。
+  ipcMain.handle('log:error', (_e, payload) => {
+    const text = payload && (payload.stack || payload.message) ? (payload.stack || payload.message) : String(payload);
+    logFatal('renderer', text);
+    console.error('[renderer]', text);
+    return { ok: true };
+  });
+
   ipcMain.handle('app:getInit', async () => {
     const office = await officeDetector.detect();
     const videos = decorateThumbs(await library.scanVideos(), 'video');

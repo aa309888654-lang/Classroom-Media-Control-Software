@@ -544,29 +544,5 @@
     "title": "Dude",
     "url": "https://assets.mixkit.co/music/1190/1190.mp3",
     "file": "Dude.mp3"
-  },
-  {
-    "cat": "上课铃声",
-    "title": "Achievement bell",
-    "url": "https://assets.mixkit.co/active_storage/sfx/600/600-preview.mp3",
-    "file": "上课铃 · 清脆铃.mp3"
-  },
-  {
-    "cat": "上课铃声",
-    "title": "Melodic classic door bell",
-    "url": "https://assets.mixkit.co/active_storage/sfx/111/111-preview.mp3",
-    "file": "下课铃 · 叮咚铃.mp3"
-  },
-  {
-    "cat": "上课铃声",
-    "title": "Relaxing bell chime",
-    "url": "https://assets.mixkit.co/active_storage/sfx/3109/3109-preview.mp3",
-    "file": "预备铃 · 柔和铃声.mp3"
-  },
-  {
-    "cat": "上课铃声",
-    "title": "Airport announcement ding",
-    "url": "https://assets.mixkit.co/active_storage/sfx/1569/1569-preview.mp3",
-    "file": "广播提示铃.mp3"
   }
 ]

@@ -94,14 +94,24 @@ function applyBrand(b) {
     if (lt) lt.textContent = `${b.name} · 课堂中控`;
     document.title = `${b.name} · 课堂中控`;
   }
-  if (b.version) dom.stVer.textContent = `v${b.version}`;
+  // 注意：这里**不要**覆盖 dom.stVer。
+  // 品牌资产里的 version 是品牌包创建时写死的占位值（实测就是 "0.1.0"，从未跟着版本迭代），
+  // 盖在状态栏上会让老师永远看到 "v0.1.0"。
+  // 状态栏显示的是**应用版本**，由 init() 用 app:getInit 的 version 写入。
   if (b.site) dom.stSite.textContent = b.site;
 }
 
 async function init() {
   cacheDom();
+  // d 必须声明在 try 外面：函数末尾要用 d.version / d.brand。
+  // 原来 const d 写在 try 块内，块外的 `dom.stVer.textContent = v${d.version}` 会抛
+  // ReferenceError: d is not defined → init() 在最后几行中断，
+  // applyBrand() 从不执行（品牌 logo/名称/版本/官网/赞助全是 index.html 里的静态占位，
+  // 状态栏版本号永远停在 "v0.1.0"），applyPlatformUI() 与快捷键冲突提示也跟着不执行。
+  // 2026-10-20 全面检查发现（经 log:error 通道在主进程日志里抓到的启动期异常）。
+  let d = null;
   try {
-    const d = await ipcInvoke('app:getInit');
+    d = await ipcInvoke('app:getInit');
     state.platform = d.platform || 'win32';
     state.config = d.config;
     state.music = d.music || [];
@@ -2889,7 +2899,10 @@ function bindWelcome() {
   Icons.hydrate(dom.welcomeOverlay);
 }
 
-function fileUrl_(p) { return encodeURI(`file:///${String(p).replace(/\\/g, '/')}`); }
+// 文件 URL：# 与 ? 是 URL 保留字符，encodeURI 不转义它们。
+// 文件名里带 # 时（Windows 允许）浏览器会把 # 之后当成 fragment → 资源 404、缩略图永久裂图。
+// 与 audioEngine.fileUrl（:151）保持一致——同一逻辑三处写法原本不一致。
+function fileUrl_(p) { return encodeURI(`file:///${String(p).replace(/\\/g, '/')}`).replace(/#/g, '%23').replace(/\?/g, '%3F'); }
 
 async function openWelcome() {
   const cfg = (window.api && (await window.api.invoke('config:save', {}))) || state.config;

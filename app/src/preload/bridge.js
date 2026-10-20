@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const INVOKE_CHANNELS = new Set([
   'app:getInit', 'app:quit', 'app:openExternal', 'app:copyText',
+  'log:error',
   'config:save',
   'library:scan', 'library:deleteFile', 'music:renameTrack',
   'displays:list', 'displays:extend', 'displays:select',

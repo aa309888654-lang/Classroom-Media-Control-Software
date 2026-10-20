@@ -20,12 +20,17 @@ const PLAN = [
   ['上舞台', 'https://mixkit.co/free-stock-music/tag/energetic/', 14],
   ['下舞台', 'https://mixkit.co/free-stock-music/funk/', 10],
 ];
-const BELLS = [
-  ['上课铃 · 清脆铃', 'https://assets.mixkit.co/active_storage/sfx/600/600-preview.mp3', 'Achievement bell'],
-  ['下课铃 · 叮咚铃', 'https://assets.mixkit.co/active_storage/sfx/111/111-preview.mp3', 'Melodic classic door bell'],
-  ['预备铃 · 柔和铃声', 'https://assets.mixkit.co/active_storage/sfx/3109/3109-preview.mp3', 'Relaxing bell chime'],
-  ['广播提示铃', 'https://assets.mixkit.co/active_storage/sfx/1569/1569-preview.mp3', 'Airport announcement ding'],
-];
+// 上课铃声**不再**由本脚本下载。
+//
+// 内置铃声早已改用 Freesound 的真实校园录音（CC0 公有领域，见 licenses.md「上课铃声」一节），
+// 并按用途重新命名（集合铃·走廊铃 / 上课铃·电子电铃 / 下课铃·校园实录铃 / 预备铃·短音铃）。
+// 早期从 Mixkit 下载的清脆铃/叮咚铃/柔和铃声/广播提示铃已被替换。
+//
+// 保留原来的 BELLS 下载段会有两个后果：
+//   ① 覆盖掉磁盘上的 Freesound 铃声，把 Freesound 素材换成 Mixkit 素材（许可与署名都变了）
+//   ② manifest.json 被写回 4 条指向 Mixkit 铃声的**错误来源**（实际文件早已不是它们）
+// 因此这里直接不下载铃声；铃声的来源与许可以 licenses.md 为准。
+const BELLS = [];
 
 // 白名单净化文件名：只保留 字母/数字（含中文）/空格/括号/&/'+-
 const sanitize = (s) => (s || '')

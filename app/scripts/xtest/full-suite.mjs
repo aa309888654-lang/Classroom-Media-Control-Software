@@ -225,7 +225,7 @@ await phase('D 播放冲突', async () => {
     else {
       await realClick(pt.x, pt.y); await sleep(700);
       const after = await eng();
-      c.check('D5 BUG-A 修复：视频播放中点播放键被拦，音乐未起播', after.playing === false, JSON.stringify(after));
+      c.check('D5 BUG-A 修复：视频播放中点播放键被拦，音乐未起播', after.playing === false, JSON.stringify(after) + ` 坐标命中=${pt.hitOk}`);
       const tip = await ev(`(() => {
         const box = document.getElementById('toasts');
         const last = box && box.lastElementChild;
@@ -242,7 +242,7 @@ await phase('D 播放冲突', async () => {
     const cb = await centerOf('#btnPlayCat');
     if (cb) {
       await realClick(cb.x, cb.y); await sleep(600);
-      c.check('D7 分类「播放全部」入口同样被拦', (await eng()).playing === false);
+      c.check('D7 分类「播放全部」入口同样被拦', (await eng()).playing === false, `坐标命中=${cb.hitOk}`);
     }
 
     await stopVideo();

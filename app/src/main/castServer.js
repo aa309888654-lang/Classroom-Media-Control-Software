@@ -14,6 +14,9 @@ const config = require('./config'); // SEC-03：证书信任开关走配置（�
 const DEFAULT_PORT = 18333;
 const MAX_OFFSET = 8;
 const UPLOAD_MAX = 500 * 1024 * 1024; // 单文件上限 500MB
+// 实际生效的上限：默认就是 UPLOAD_MAX；start(cb, { uploadMax }) 可调小（集成测试用），
+// 不传就是生产值，不会被意外放宽。
+let uploadMax = UPLOAD_MAX;
 
 let httpServer = null;
 let httpsServer = null;
@@ -210,22 +213,46 @@ function handleUpload(req, res, u) {
   let size = 0;
   let aborted = false;
   let responded = false;
+  let completed = false;   // 写流是否走完（finish 置位）——用来区分「正常收完」与「半截」
   req.on('data', (c) => {
     size += c.length;
     // 超限：先回 413 再断流。原来直接 req.destroy() 不发响应，客户端只看到 socket hang up
-    if (size > UPLOAD_MAX && !aborted) {
+    if (size > uploadMax && !aborted) {
       aborted = true;
       responded = true;
-      sendJson(req, res, 413, { ok: false, error: 'too-large', max: UPLOAD_MAX });
-      req.destroy();
+      // 413 必须真的送达客户端：响应声明「连接即将关闭」，
+      // 并且收尾用优雅 FIN（socket.end()）而不是 RST（destroy()）——
+      // RST 会把还躺在客户端接收缓冲区里的响应数据一起冲掉，
+      // 客户端只看到 ECONNRESET（"socket hang up"），用户看到的是无意义的网络错误
+      // 而不是「文件太大」。原来的 req.destroy() 正是这个毛病。
+      try { res.setHeader('Connection', 'close'); } catch { }
+      sendJson(req, res, 413, { ok: false, error: 'too-large', max: uploadMax });
+      // 关键（2026-10-20 全面检查发现）：req.destroy() 不带 error 参数时，
+      // pipe 的 dest 既收不到 'end' 也收不到 'error' → 写流的 'finish'/'close' 都不会触发
+      //（Node v24 实测：只有请求侧 REQ_CLOSE 触发）。于是下面 out.on('close') 的清理
+      // 是死代码：半成品文件残留 + 写流 fd 不关，每次超限在系统盘留下最多 500MB。
+      // 必须显式销毁写流并立刻删文件。
+      try { out.destroy(); } catch { }
+      try { fs.rmSync(file, { force: true }); } catch { }
+      // 响应 flush 完之后再优雅断开连接，客户端这时已经能读到 413。
+      res.on('finish', () => { try { if (req.socket) req.socket.end(); } catch { } });
     }
   });
   req.pipe(out);
+  // 客户端中途断开（未超限）：req 不会发 'end'，写流同样收不到 finish/close，
+  // 半成品会一直留在磁盘上。req.complete 为 true 表示消息完整收到（正常路径）。
+  req.on('close', () => {
+    if (req.complete || completed) return;
+    try { out.destroy(); } catch { }
+    try { fs.rmSync(file, { force: true }); } catch { }
+  });
   out.on('close', () => {
-    // 被掐断/出错时把半成品清掉；原来只有 finish 里判断 aborted，非正常结束会残留垃圾文件
-    if (aborted) { try { fs.rmSync(file, { force: true }); } catch { } }
+    // 没走完 finish 就是半成品（被掐断/超限/出错），一律清掉；
+    // 正常上传完成时 writableFinished 为 true，不动它。
+    if (!out.writableFinished) { try { fs.rmSync(file, { force: true }); } catch { } }
   });
   out.on('finish', () => {
+    completed = true;
     if (aborted) { try { fs.rmSync(file, { force: true }); } catch { } return; }
     const mimeFinal = mime || MIME_MAP[ext] || 'application/octet-stream';
     uploads.set(id, { file, name, mime: mimeFinal });
@@ -234,8 +261,9 @@ function handleUpload(req, res, u) {
     if (!responded) sendJson(req, res, 200, { ok: true, id, url: `/media/${id}` });
   });
   out.on('error', () => {
+    completed = true;
     try { fs.rmSync(file, { force: true }); } catch { }
-    if (!responded) sendJson(req, res, 500, { ok: false, error: 'save-failed' });
+    if (!responded) { responded = true; sendJson(req, res, 500, { ok: false, error: 'save-failed' }); }
   });
 }
 
@@ -672,7 +700,9 @@ async function listenOn(create, p) {
 let starting = null; // 正在启动中的 Promise：并发 start 复用同一次，杜绝双服务
 let abortGen = 0;    // stop() 会自增：启动途中被停止时，本次启动代号作废并关掉刚起的 server
 
-async function start(cb) {
+async function start(cb, opts = {}) {
+  // 单文件上传上限：默认 500MB；测试可传更小的值走真实 413 分支（不加测试专用环境变量）
+  if (Number.isFinite(opts && opts.uploadMax) && opts.uploadMax > 0) uploadMax = Math.floor(opts.uploadMax);
   // 并发守卫（照搬 pptServer 的 starting 串行化写法）：
   // start() 内部有 await，可被并发进入。若不加闸，双击「无线同屏」会起两个服务——
   // A 拿到 18333、B 拿到 18334 并覆盖模块变量，srvA 此后永不被 stop() 关闭，

@@ -74,13 +74,25 @@ export async function attach(port = 9235, urlMatch = 'index.html') {
       const e = document.querySelector(${JSON.stringify(sel)});
       if (!e) return null;
       const r = e.getBoundingClientRect();
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), w: Math.round(r.width), h: Math.round(r.height) };
+      const x = Math.round(r.x + r.width / 2);
+      const y = Math.round(r.y + r.height / 2);
+      // 点前自检：这个坐标命中的必须就是目标元素（命中别的=点击会打空/打到状态栏上）。
+      // 之前没有这道自检，点击落空只会表现为「功能没生效」，很难一眼看出是坐标问题。
+      const hit = document.elementFromPoint(x, y);
+      const hitOk = !!(hit && (hit === e || e.contains(hit) || hit.contains(e)));
+      return { x, y, w: Math.round(r.width), h: Math.round(r.height), hitOk, hitTag: hit ? (hit.id || hit.tagName || '') : null };
     })()`);
   };
   const close = () => { try { ws.close(); } catch { } };
 
   await send('Page.enable');
   await send('Runtime.enable');
+  // Chromium 在「混合 DPI + 多屏」下会误判窗口被遮挡 → document.hidden=true：
+  //   · rAF 不再触发 → centerOf() 里等坐标稳定的轮询会**永久挂起**（套件直接卡死）
+  //   · 真实鼠标点击被丢弃 → 断言看到的是「点击落空」而不是「功能坏了」（假失败）
+  // 实测：面板被放大到 1470×1114 后必现（系统与渲染层都认为窗口可见、未最小化、hasFocus=true，
+  // 只有 visibilityState 是 hidden）。开焦点模拟可强制页面进入 active/visible 状态。
+  try { await send('Emulation.setFocusEmulationEnabled', { enabled: true }); } catch { }
   return { ev, invoke, send, realClick, doubleClick, centerOf, close, page };
 }
 

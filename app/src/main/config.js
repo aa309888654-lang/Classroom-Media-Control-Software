@@ -98,6 +98,27 @@ function configPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
 
+/** 上一版配置备份路径：主配置损坏时的回落来源 */
+function bakPath() {
+  return configPath() + '.bak';
+}
+
+/**
+ * 原子写：先写临时文件，再 rename 覆盖正式文件（同一卷内 rename 是原子的）。
+ * 直接 writeFileSync 覆写会在写盘中途被断电/被杀/磁盘写满时留下半截 JSON，
+ * 下次启动解析失败 → 设置静默归零，用户毫无察觉（2026-10-20 全面检查发现）。
+ */
+function writeAtomic(file, content) {
+  const tmp = file + '.tmp';
+  try {
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { }
+    throw e;
+  }
+}
+
 function deepMerge(base, patch) {
   if (Array.isArray(patch)) return patch;
   if (patch && typeof patch === 'object') {
@@ -112,10 +133,28 @@ function deepMerge(base, patch) {
 }
 
 function load() {
+  const file = configPath();
+  // 清掉上次写盘残留的半截临时文件（正式文件靠 rename 保证完整，tmp 才是可能的碎片）
+  try { fs.rmSync(file + '.tmp', { force: true }); } catch { }
   try {
-    cfg = deepMerge(structuredClone(DEFAULTS), JSON.parse(fs.readFileSync(configPath(), 'utf8')));
-  } catch {
+    cfg = deepMerge(structuredClone(DEFAULTS), JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch (e) {
+    // 配置损坏（写盘中断/磁盘满/进程被杀）：原来直接静默换成 DEFAULTS，
+    // 等于用户的目录/快捷键/音量一次性无声归零。先尝试 .bak 回落；
+    // 两条路都失败也必须把「丢过设置」告诉用户，不能默默吞掉。
     cfg = structuredClone(DEFAULTS);
+    let restored = false;
+    try {
+      cfg = deepMerge(structuredClone(DEFAULTS), JSON.parse(fs.readFileSync(bakPath(), 'utf8')));
+      restored = true;
+    } catch { }
+    loadError = restored
+      ? '配置文件损坏，已从备份自动恢复'
+      : (fs.existsSync(file) ? '配置文件损坏，已重置为默认设置' : '');
+    if (loadError) {
+      console.error('[config] ' + loadError, e && e.message);
+      try { if (typeof saveErrorCb === 'function') saveErrorCb(loadError, 'load'); } catch { }
+    }
   }
   if (!cfg.musicDir) cfg.musicDir = path.join(app.getPath('documents'), '小天AIGC', '音乐');
   if (!cfg.videoDir) cfg.videoDir = path.join(app.getPath('documents'), '小天AIGC', '视频');
@@ -152,21 +191,25 @@ function save(patch) {
   // 窗口位置/音量/热键会**静默全丢**且用户毫无提示。
   // 注意不能把错误塞进返回值（会被下次 save 写进配置文件），改为记录 + 回调通知主进程弹提示。
   try {
-    fs.writeFileSync(configPath(), json, 'utf8');
+    // 先留一份 .bak：万一本次写盘中途出事，还有上一版完好配置可回落
+    try { fs.copyFileSync(configPath(), bakPath()); } catch { }
+    writeAtomic(configPath(), json);
     lastSaveError = '';
   } catch (e) {
     lastSaveError = String((e && e.message) || e);
     console.error('[config] 写盘失败，本次设置未能保存：', lastSaveError);
-    try { if (typeof saveErrorCb === 'function') saveErrorCb(lastSaveError); } catch { }
+    try { if (typeof saveErrorCb === 'function') saveErrorCb(lastSaveError, 'save'); } catch { }
   }
   return cfg;
 }
 
 let lastSaveError = '';  // 最近一次写盘失败原因（供 UI 提示/排查）
+let loadError = '';     // 最近一次「配置损坏/回落」说明（同上，必须让用户看见）
 let saveErrorCb = null;  // 主进程注入的失败通知（一般接 toast）
 
-/** 注册写盘失败回调：设置没存上必须让用户看见，否则等于静默丢配置 */
+/** 注册写盘失败回调：设置没存上必须让用户看见，否则等于静默丢配置
+ *  kind: 'save' = 写盘失败；'load' = 配置损坏已回落/重置 */
 function onSaveError(cb) { saveErrorCb = typeof cb === 'function' ? cb : null; }
-function lastError() { return lastSaveError; }
+function lastError() { return lastSaveError || loadError; }
 
 module.exports = { get, save, load, onSaveError, lastError };

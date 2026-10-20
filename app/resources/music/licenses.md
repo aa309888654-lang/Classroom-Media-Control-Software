@@ -178,7 +178,10 @@
 ## 替换 / 新增曲目须知
 
 - 把 MP3/WAV 放进 `resources/music/<分类>/`（内置）或设置里的音乐文件夹（用户曲库）即可，软件自动识别；
-- 若删除或替换本清单中的曲目，请同步更新本文件与 `manifest.json`（Mixkit 部分可重跑 `node scripts/fetch-music.mjs` 重新生成）；
+- 若删除或替换本清单中的曲目，请同步更新本文件与 `manifest.json`
+  （`manifest.json` **只记录 Mixkit 下载的 91 首**；Kevin MacLeod 曲目、Freesound 铃声、用户自供曲目
+  与「开学组」复本的来源以**本文件**为准。重跑 `node scripts/fetch-music.mjs` 可重新生成 manifest 的
+  Mixkit 部分——该脚本**已不再下载铃声**，以免覆盖 Freesound 的校园实录素材）；
 - 不要放入未获得授权的商用音乐（网易云/QQ 音乐下载的歌曲均不可用）；
 - 曲库总体积约 440MB，打包的 EXE 安装包会相应变大，属预期。
 

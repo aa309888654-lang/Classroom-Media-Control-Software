@@ -16,13 +16,19 @@ const AUDIO_ALL = ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.opus', '.w
 
 function resolveFfmpeg() {
   const { app } = require('electron');
-  const rel = path.join('node_modules', 'ffmpeg-static', 'ffmpeg.exe');
+  // ffmpeg-static 的产物名带平台后缀：Windows 是 ffmpeg.exe，macOS/Linux 是 ffmpeg。
+  // 原来四处候选路径全部硬编码 'ffmpeg.exe' → macOS 上一个都命中不了，
+  // resolveFfmpeg() 恒返回 null → MOV/MKV/AVI 转码直接失败（'no-ffmpeg'）、
+  // 视频缩略图一张都生成不了（thumbs.js 走同一函数）。
+  // 2026-10-20 全面检查发现：README/包配置都宣称支持 macOS，但该平台媒体库退化成纯文字列表。
+  const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const rel = path.join('node_modules', 'ffmpeg-static', exeName);
   // 打包态：asarUnpack 之后二进制在 app.asar.unpacked 下；dev：随包安装的 ffmpeg-static
   const candidates = [
     path.join(process.resourcesPath || '', 'app.asar.unpacked', rel),
     path.join(app.getAppPath(), rel),
     path.join(app.getAppPath().replace('app.asar', 'app.asar.unpacked'), rel),
-    path.join(__dirname, '..', '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe'), // dev 兜底
+    path.join(__dirname, '..', '..', 'node_modules', 'ffmpeg-static', exeName), // dev 兜底
   ];
   for (const p of candidates) { try { if (p && fs.existsSync(p)) return p; } catch { } }
   return null;

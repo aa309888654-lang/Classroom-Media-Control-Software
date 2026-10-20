@@ -67,6 +67,10 @@ function spawnCtl(action, params = {}, timeoutMs = 10000) {
       if (!settled) { settled = true; try { child.kill(); } catch { } resolve({ ok: false, error: 'timeout' }); }
     }, timeoutMs);
     child.stdout.on('data', (d) => { out += d.toString(); });
+    // stderr 必须消费掉：spawn 默认给三条管道，没人读 stderr 时，
+    // PowerShell 往 stderr 写满管道缓冲（Windows 约 64KB）就会阻塞子进程，
+    // 表现为「控制 PowerShell 偶发卡死直到超时」。只排空不解析。
+    try { child.stderr.resume(); } catch { }
     child.on('error', (err) => {
       if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false, error: 'spawn-failed', detail: String(err) }); }
     });

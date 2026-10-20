@@ -43,6 +43,10 @@ Thumbs.db
 # Assets not needed in repo
 LED背景/
 音乐/
+# 「开学组」是已有曲目的复本（见 app/resources/music/licenses.md 第五节），
+# 9 个 mp3 共约 50MB。显式排除，免得 git add -A 把大体积复本误提交。
+# 其余内置曲库分类历史上已入库，保持不变。
+app/resources/music/开学组/
 77ff2f5f-faea-4542-998c-ac1101b4cf8d.png
 *.png
 !app/resources/icon.png

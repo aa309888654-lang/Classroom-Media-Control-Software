@@ -1,5 +1,5 @@
 # 单元测试 + 集成测试（GAP-01）：每次推送/PR 在 Windows runner 上跑 node --test
-# 覆盖：config/hotkeys/library/transcode/thumbs/pptServer/castServer（31 个用例）
+# 覆盖：config/hotkeys/library/transcode/thumbs/pptServer/castServer（67 个用例）
 name: test
 
 on:
@@ -23,15 +23,25 @@ jobs:
         working-directory: app
         run: npm ci || npm install
 
-      - name: 语法检查（全部 JS）
+      - name: 语法检查（src / scripts / tests 全部 JS+MJS）
         working-directory: app
         shell: pwsh
         run: |
           $fail = 0
-          Get-ChildItem -Path src -Recurse -Filter *.js | Where-Object { $_.FullName -notmatch 'vendor' } | ForEach-Object {
-            node --check $_.FullName 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { Write-Output "SYNTAX FAIL $($_.FullName)"; $fail = 1 }
+          $files = @()
+          # scripts/ 与 tests/ 也要查：CDP 测试脚本写错语法要等实机跑 CDP 才发现，
+          # 那时已经绕了一大圈（2026-10-20 全面检查发现）
+          foreach ($dir in @('src', 'scripts', 'tests')) {
+            if (Test-Path $dir) {
+              $files += Get-ChildItem -Path $dir -Recurse -File |
+                Where-Object { $_.Extension -in @('.js', '.mjs') -and $_.FullName -notmatch 'vendor' }
+            }
           }
+          foreach ($f in $files) {
+            node --check $f.FullName 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { Write-Output "SYNTAX FAIL $($f.FullName)"; $fail = 1 }
+          }
+          Write-Output "已检查 $($files.Count) 个文件"
           if ($fail -ne 0) { exit 1 }
 
       - name: 单元 + 集成测试

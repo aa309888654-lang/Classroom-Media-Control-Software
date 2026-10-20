@@ -113,7 +113,14 @@ function showWindow() {
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type === 'keyDown' && input.key === 'Escape' && !input.isAutoRepeat) escExit();
   });
-  win.on('closed', () => { win = null; });
+  // 只清「自己那个」窗口的引用。
+  // 原来直接 `win = null`：W1 被 close() 后，'closed' 事件是**异步**到达的，
+  // 若这期间又 showWindow() 建出 W2，W1 的回调会把模块级 win 清空 →
+  // W2 成为孤儿，closeWindow() 因 win===null 直接跳过，
+  // 投影屏上的计时器窗口再也关不掉，每开一次叠一个，只能杀进程。
+  // 2026-10-20 全面检查发现。
+  const self = win;
+  self.on('closed', () => { if (win === self) win = null; });
 }
 
 function toggleShow() {

@@ -386,7 +386,8 @@ body.section-drag-active .panel-head { cursor: grabbing; }
 
 /* ---------- 正在播放 ---------- */
 .now-playing {
-  margin-top: 10px; display: flex; align-items: center; justify-content: space-between;
+  /* 独占整行后与上下块的间距由 .content 的 flex gap（12px）统一提供，这里不再叠加 margin */
+  margin-top: 0; display: flex; align-items: center; justify-content: space-between;
   gap: 12px; background: var(--card); border: 1px solid var(--border);
   border-radius: 10px; padding: 9px 12px; flex-wrap: wrap;
   transition: border-color 0.3s var(--ease);
@@ -839,7 +840,7 @@ body.roomy .ci-name { font-size: 14px; }
 body.roomy .ci-play { width: 34px; height: 34px; border-radius: 9px; }
 body.roomy .cat-track { font-size: 13px; padding: 8px 11px; border-radius: 8px; }
 body.roomy .track-list { max-height: 430px; padding: 8px; }
-body.roomy .now-playing { margin-top: 14px; padding: 13px 16px; gap: 16px; border-radius: 12px; }
+body.roomy .now-playing { margin-top: 0; padding: 13px 16px; gap: 16px; border-radius: 12px; }
 body.roomy .np-eq { width: 42px; height: 42px; border-radius: 11px; }
 body.roomy .np-track { font-size: 16px; }
 body.roomy .np-cat { font-size: 12px; margin-top: 3px; }
