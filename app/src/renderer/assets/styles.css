@@ -649,7 +649,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   transition: height 0.15s var(--ease);
 }
 .vp-track:hover, .vp-track.dragging { height: 8px; }
-.vp-fill { height: 100%; width: 0%; background: var(--grad); border-radius: 4px; transition: width 0.35s linear; }
+/* 用 transform: scaleX 而不是 width：width 不是可合成属性，过渡期间每帧都要 layout+paint。
+ * 渐变是相对元素宽度的，scaleX 压缩后与 width 方案视觉等价，但走合成器、零布局。 */
+.vp-fill { height: 100%; width: 100%; transform: scaleX(0); transform-origin: left center; background: var(--grad); border-radius: 4px; transition: transform 0.35s linear; }
 .vp-track.dragging .vp-fill { transition: none; }
 .vp-knob {
   position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; margin: -7px 0 0 -7px;
@@ -793,7 +795,7 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .np-bottom { width: 100%; display: flex; align-items: center; gap: 10px; margin-top: 3px; }
 .np-progress { flex: 1; height: 5px; border-radius: 3px; background: #2a3545; cursor: pointer; overflow: visible; position: relative; transition: height 0.15s var(--ease); touch-action: none; }
 .np-progress:hover, .np-progress.dragging { height: 7px; }
-.np-progress-fill { height: 100%; width: 0%; background: var(--grad); border-radius: 3px; transition: width 0.4s linear; }
+.np-progress-fill { height: 100%; width: 100%; transform: scaleX(0); transform-origin: left center; background: var(--grad); border-radius: 3px; transition: transform 0.4s linear; }
 .np-progress.dragging .np-progress-fill { transition: none; }
 .np-knob {
   position: absolute; top: 50%; left: 0%; width: 13px; height: 13px; margin: -7px 0 0 -7px;

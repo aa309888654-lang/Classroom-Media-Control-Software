@@ -109,7 +109,38 @@ function notify(ev) { if (statusCb) statusCb(ev); }
 function bye() { queues.sender.push({ type: 'bye' }); }
 
 /* ---------- 自签证书（按局域网 IP 缓存；IP 变了自动重签，杜绝 SAN 失效） ---------- */
-function ensureCert() {
+// 证书生成改成异步：RSA-2048 keygen 是纯 CPU 重活（node-forge 纯 JS 实现，本机实测
+// keygen 26ms + 签名 45ms ≈ 71ms；低端一体机 5~10 倍）。
+// 原来放在主进程事件循环里同步做 → 生成期间窗口不重绘、托盘无响应、globalShortcut 无响应，
+// 而「点无线同屏」那一刻正好是最不该卡的时候。
+// 现在 keygen 走 Node 原生 crypto（OpenSSL，跑在 libuv 线程池，不占主线程），
+// 只有 forge 签 X.509 那一步是同步的（约 45ms，可接受）。
+function readCertFiles(dir, ip) {
+  const keyFile = path.join(dir, `key-${ip}.pem`);
+  const crtFile = path.join(dir, `cert-${ip}.pem`);
+  try {
+    const key = fs.readFileSync(keyFile, 'utf8');
+    const cert = fs.readFileSync(crtFile, 'utf8');
+    if (key && cert) return { key, cert, keyFile, crtFile };
+  } catch { }
+  return null;
+}
+
+// 原生 RSA keygen（异步、不阻塞主线程）；返回 PEM 供 forge 签证书
+function genKeyPairAsync() {
+  const crypto = require('crypto');
+  return new Promise((resolve, reject) => {
+    crypto.generateKeyPair('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    }, (err, publicKey, privateKey) => {
+      if (err) reject(err); else resolve({ publicKey, privateKey });
+    });
+  });
+}
+
+async function ensureCert() {
   const { app } = require('electron');
   const forge = require('node-forge');
   const dir = path.join(app.getPath('userData'), 'cast-cert');
@@ -118,14 +149,17 @@ function ensureCert() {
   const crtFile = path.join(dir, `cert-${ip}.pem`);
   let key = '';
   let cert = '';
-  try {
-    key = fs.readFileSync(keyFile, 'utf8');
-    cert = fs.readFileSync(crtFile, 'utf8');
-  } catch { }
-  if (!key || !cert) {
-    const keys = forge.pki.rsa.generateKeyPair(2048);
+  const cached = readCertFiles(dir, ip);
+  if (cached) {
+    key = cached.key;
+    cert = cached.cert;
+  } else {
+    // keygen 异步（不占主线程），forge 只负责签 X.509
+    const kp = await genKeyPairAsync();
+    const priv = forge.pki.privateKeyFromPem(kp.privateKey);
+    const pub = forge.pki.publicKeyFromPem(kp.publicKey);
     const x509 = forge.pki.createCertificate();
-    x509.publicKey = keys.publicKey;
+    x509.publicKey = pub;
     x509.serialNumber = '01' + Date.now().toString(16);
     x509.validity.notBefore = new Date(Date.now() - 60 * 1000);
     x509.validity.notAfter = new Date(Date.now() + 10 * 365 * 24 * 3600 * 1000);
@@ -138,8 +172,9 @@ function ensureCert() {
     ];
     if (ip && ip !== '127.0.0.1') altNames.push({ type: 7, ip });
     x509.setExtensions([{ name: 'subjectAltName', altNames }]);
-    x509.sign(keys.privateKey, forge.md.sha256.create());
-    key = forge.pki.privateKeyToPem(keys.privateKey);
+    x509.sign(priv, forge.md.sha256.create());
+    // 落盘用 forge 的 PKCS#1 私钥格式（浏览器 / openssl 都认）
+    key = forge.pki.privateKeyToPem(priv);
     cert = forge.pki.certificateToPem(x509);
     try {
       fs.mkdirSync(dir, { recursive: true });
@@ -716,7 +751,7 @@ async function start(cb, opts = {}) {
   queues.receiver.length = 0;
   queues.sender.length = 0;
   ensureUploadsDir();
-  currentCert = ensureCert();
+  currentCert = await ensureCert();
 
   for (let i = 0; i <= MAX_OFFSET; i++) {
     const r = await listenOn(() => http.createServer(handle), DEFAULT_PORT + i);
@@ -770,11 +805,12 @@ function stop() {
 function running() { return !!httpServer; }
 function current() { return { running: !!httpServer, url, httpsUrl, port, httpsPort, token: authToken }; }
 
-// 预热证书：RSA-2048 keygen 是纯 CPU 的同步重活（本机实测 ~91ms，低端一体机 0.5~0.8s），
-// 放在 start() 里就是「点无线同屏像假死」。改为启动后空闲时段先跑一遍，
-// 之后按 IP 命中缓存，首次点击就是零成本。
-function warmCert() {
-  try { return ensureCert(); } catch { return null; }
+// 预热证书：RSA-2048 keygen 是纯 CPU 重活（本机实测 keygen 26ms + 签名 45ms ≈ 71ms，
+// 低端一体机 5~10 倍）。放在 start() 里就是「点无线同屏像假死」；
+// 原来放启动后 +2s 同步预热，等于「开机白卡一下」，哪怕老师从不用无线同屏。
+// 现在 keygen 走原生异步（不占主线程），预热保留但零阻塞。
+async function warmCert() {
+  try { return await ensureCert(); } catch { return null; }
 }
 
 module.exports = { start, stop, bye, running, current, setCommandHandler, setStateProvider, warmCert };

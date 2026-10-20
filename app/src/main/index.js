@@ -334,8 +334,9 @@ const PPT_ERRORS = IS_MAC ? {
 // 在模块顶层（app ready 之前）执行会让开机黑屏 1~3s，老机更久）。
 setTimeout(() => {
   Promise.allSettled([pptExport.sweep(), transcode.sweepMediaCache()]);
-  // 顺带把投屏证书预生成好：keygen 是同步重活，放在用户点「无线同屏」那一刻会像假死
-  try { castServer.warmCert(); } catch { }
+  // 顺带把投屏证书预生成好：keygen 是纯 CPU 的重活，放在用户点「无线同屏」那一刻会像假死。
+  // 异步生成（原生 crypto，走 libuv 线程池，不占主进程），失败也不影响启动。
+  try { castServer.warmCert().catch(() => { }); } catch { }
 }, 2000);
 const pptExportDir = pptExport.exportDir;
 let pptLastPos = 0;

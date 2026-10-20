@@ -356,7 +356,7 @@ function tickProgress(ts) {
     dom.npTime.style.display = show ? 'block' : 'none';
     if (show) {
       const ratio = (el.currentTime / dur) * 100;
-      dom.npFill.style.width = `${ratio}%`;
+      dom.npFill.style.transform = `scaleX(${ratio / 100})`;
       if (dom.npKnob) dom.npKnob.style.left = `${ratio}%`;
       dom.npTime.textContent = `${fmtTime(el.currentTime)} / ${fmtTime(dur)}`;
     }
@@ -733,7 +733,17 @@ function startTrackDrag(row, cat, idx, y) {
   row.classList.add('dragging');
   row.style.top = `${r.top}px`;
   row.style.left = `${r.left}px`;
-  trackDrag = { el: row, cat, fromIdx: idx, offY: y - r.top, overEl: null };
+  // 拖动过程中只有被拖的那行在移动，其他行的位置不变（它们要等松手后才重排），
+  // 所以各行中线在拖动开始时算一次就够。
+  // 原来每帧都 getBoundingClientRect() → 强制整块面板重排，拖得越快越卡。
+  const rows = $$(`#catCards .cat-track[data-cat="${cat.category}"]`);
+  const mids = [];
+  for (const c of rows) {
+    if (c === row) continue;
+    const cr = c.getBoundingClientRect();
+    mids.push({ el: c, mid: cr.top + cr.height / 2, idx: Number(c.dataset.idx) });
+  }
+  trackDrag = { el: row, cat, fromIdx: idx, offY: y - r.top, overEl: null, mids };
 }
 
 function moveTrackDrag(y) {
@@ -742,7 +752,7 @@ function moveTrackDrag(y) {
   // 行列表只查一次：原来 trackTargetAt 与下面各查一次同一个复合选择器
   // （#catCards .cat-track[data-cat=…] 要遍历列表全部子节点，每次 pointermove 扫两遍）
   const rows = $$(`#catCards .cat-track[data-cat="${trackDrag.cat.category}"]`);
-  const t = trackTargetAt(y, trackDrag.cat, rows);
+  const t = trackTargetAt(y, trackDrag.cat, rows, true);
   // 只切「上一个高亮行 → 当前目标行」两个元素：原来每帧对同分类所有行 classList.toggle
   // （写样式 → 下一帧整块重排）。行为等价，但每帧只动 1~2 个元素。
   const next = t ? t.el : null;
@@ -751,17 +761,24 @@ function moveTrackDrag(y) {
   trackDrag.overEl = next;
 }
 
-function trackTargetAt(y, cat, rowsIn) {
+// useCache=true：拖动过程中用 startTrackDrag 缓存的行中线（避免每帧强制重排）
+// useCache=false：松手瞬间用实时 rect（此时拖动行离流、其他行已上移，缓存会不准）
+function trackTargetAt(y, cat, rowsIn, useCache) {
   // 拖拽行离流后其余行会上移，漏击概率高——按「行中线最近」决定插入点，任何 y 都有落点
-  const rows = (rowsIn || $$(`#catCards .cat-track[data-cat="${cat.category}"]`)).filter((c) => c !== trackDrag.el);
-  if (!rows.length) return null;
-  for (const c of rows) {
-    const r = c.getBoundingClientRect();
-    const mid = r.top + r.height / 2;
-    if (y < mid) return { idx: Number(c.dataset.idx), before: true, el: c };
+  let list;
+  if (useCache && trackDrag && trackDrag.mids) {
+    list = trackDrag.mids;
+  } else {
+    list = (rowsIn || $$(`#catCards .cat-track[data-cat="${cat.category}"]`))
+      .filter((c) => c !== trackDrag.el)
+      .map((c) => { const r = c.getBoundingClientRect(); return { el: c, mid: r.top + r.height / 2, idx: Number(c.dataset.idx) }; });
   }
-  const last = rows[rows.length - 1];
-  return { idx: Number(last.dataset.idx), before: false, el: last };
+  if (!list.length) return null;
+  for (const it of list) {
+    if (y < it.mid) return { idx: it.idx, before: true, el: it.el };
+  }
+  const last = list[list.length - 1];
+  return { idx: last.idx, before: false, el: last.el };
 }
 
 function finishTrackDrag(y, cat) {
@@ -2106,9 +2123,9 @@ function fmtSec(sec) {
 }
 
 function setVideoProgressUI(ratio) {
-  const pct = `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(2)}%`;
-  dom.videoFill.style.width = pct;
-  dom.videoKnob.style.left = pct;
+  const c = Math.max(0, Math.min(1, ratio));
+  dom.videoFill.style.transform = `scaleX(${c})`;
+  dom.videoKnob.style.left = `${(c * 100).toFixed(2)}%`;
 }
 
 // 播放窗回报 / LED 内联 video 的 timeupdate 都走这里
@@ -2336,7 +2353,7 @@ function bindUI() {
     const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
     el.currentTime = ratio * el.duration;
     // 拖动即时反馈（rAF 循环 250ms 节流会跟上，但拖动时让它立刻反映，不滞后）
-    dom.npFill.style.width = `${ratio * 100}%`;
+    dom.npFill.style.transform = `scaleX(${ratio})`;
     if (dom.npKnob) dom.npKnob.style.left = `${ratio * 100}%`;
     return true;
   };
