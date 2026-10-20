@@ -733,21 +733,27 @@ function startTrackDrag(row, cat, idx, y) {
   row.classList.add('dragging');
   row.style.top = `${r.top}px`;
   row.style.left = `${r.left}px`;
-  trackDrag = { el: row, cat, fromIdx: idx, offY: y - r.top };
+  trackDrag = { el: row, cat, fromIdx: idx, offY: y - r.top, overEl: null };
 }
 
 function moveTrackDrag(y) {
   if (!trackDrag) return;
   trackDrag.el.style.top = `${y - trackDrag.offY}px`;
-  const t = trackTargetAt(y, trackDrag.cat);
-  $$(`#catCards .cat-track[data-cat="${trackDrag.cat.category}"]`).forEach((c) => {
-    c.classList.toggle('drag-over', !!(t && t.el === c));
-  });
+  // 行列表只查一次：原来 trackTargetAt 与下面各查一次同一个复合选择器
+  // （#catCards .cat-track[data-cat=…] 要遍历列表全部子节点，每次 pointermove 扫两遍）
+  const rows = $$(`#catCards .cat-track[data-cat="${trackDrag.cat.category}"]`);
+  const t = trackTargetAt(y, trackDrag.cat, rows);
+  // 只切「上一个高亮行 → 当前目标行」两个元素：原来每帧对同分类所有行 classList.toggle
+  // （写样式 → 下一帧整块重排）。行为等价，但每帧只动 1~2 个元素。
+  const next = t ? t.el : null;
+  if (trackDrag.overEl && trackDrag.overEl !== next) trackDrag.overEl.classList.remove('drag-over');
+  if (next) next.classList.add('drag-over');
+  trackDrag.overEl = next;
 }
 
-function trackTargetAt(y, cat) {
+function trackTargetAt(y, cat, rowsIn) {
   // 拖拽行离流后其余行会上移，漏击概率高——按「行中线最近」决定插入点，任何 y 都有落点
-  const rows = $$(`#catCards .cat-track[data-cat="${cat.category}"]`).filter((c) => c !== trackDrag.el);
+  const rows = (rowsIn || $$(`#catCards .cat-track[data-cat="${cat.category}"]`)).filter((c) => c !== trackDrag.el);
   if (!rows.length) return null;
   for (const c of rows) {
     const r = c.getBoundingClientRect();
@@ -1569,6 +1575,9 @@ function requestPptPages(file) {
   syncPptRailBar();
   window.api.invoke('ppt:exportAll', file).then((r) => {
     if (pptRail.file !== file) return; // 已经切到别的课件
+    // 该平台不支持整页缩略图（macOS 的 AppleScript 没有 exportall 分支）：
+    // 静默跳过，不弹英文错误码，也不反复重试
+    if (r && r.unsupported) { pptRail.total = 0; pptRail.done = true; renderPptRail(); return; }
     if (!r || !r.ok) {
       pptRail.emptyFor = file; // 失败也算「没拿到」，下次重试
       if (r && r.error && r.error !== 'busy') {

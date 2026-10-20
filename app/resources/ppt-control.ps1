@@ -397,13 +397,29 @@ function Invoke-Action([string]$A, [string]$P, [string]$Cl, [string]$Exp, [strin
         if (-not $app) { return @{ ok = $false; error = 'no-office-com' } }
         try {
           $targetPath = [System.IO.Path]::GetFullPath($P)  # BUG-10：原来 Replace('/', '') 会删掉所有正斜杠
+          # Presentations 在「PowerPoint 正在退出」时会短暂为 null（COM 代理指向半死的实例），
+          # 直接 .Open() 会抛「不能对 Null 值表达式调用方法」。
+          # 这里取不到集合就换一个新建实例；仍取不到就明确报 no-office-com（交给调用方重试），
+          # 而不是把一句空引用异常抛给上层。
+          $presentations = $null
+          try { $presentations = $app.Presentations } catch { $presentations = $null }
+          if ($null -eq $presentations) {
+            try {
+              $app = New-Object -ComObject 'PowerPoint.Application'
+              $script:CachedApp = $app
+              $script:CachedId = 'PowerPoint.Application'
+              $created = $true
+              $presentations = $app.Presentations
+            } catch { $presentations = $null }
+          }
+          if ($null -eq $presentations) { return @{ ok = $false; error = 'no-office-com' } }
           $have = $false
-          foreach ($p2 in $app.Presentations) {
+          foreach ($p2 in $presentations) {
             try { if ($p2.FullName -ieq $targetPath) { $have = $true; break } } catch { }
           }
           if (-not $have) {
             # ReadOnly=msoTrue, Untitled=msoFalse, WithWindow=msoFalse（后台无窗口）
-            $null = $app.Presentations.Open($P, -1, 0, 0)
+            $null = $presentations.Open($P, -1, 0, 0)
             if ($created) { $script:WeCreated = $true }  # 本进程拉起的 PowerPoint：退出时统一收掉
           }
           return @{ ok = $true; action = 'preopen' }

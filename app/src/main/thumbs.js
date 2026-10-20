@@ -127,12 +127,15 @@ function planRequest(opts) {
 }
 
 // onReady(kind, file, thumbPath|'')：主进程把它接到 broadcast('thumb:ready') 上
-function requestThumb(kind, file, onReady) {
+// st：调用方（库扫描/decorateThumbs）已经 stat 过的源文件信息，透传进来可省掉对源文件的重复 statSync。
+// 源文件可能在网络盘/U 盘上，多一次 stat 就是多一次可感知的同步等待
+// （网络盘 stat 往返 5~30ms，300 个文件就是十几秒主进程冻结）。
+function requestThumb(kind, file, onReady, st) {
   // 先把上一轮延后的请求放出来（放映可能已经结束了）
   if (kind === 'ppt') releaseDeferred();
   let cachedHit = false;
   // BUG-04：命中缓存直接跳过，否则每次 getInit/scan/openDialog 都全库重跑 ffmpeg/COM
-  try { cachedHit = !!cached(kind, file); } catch { }
+  try { cachedHit = !!cached(kind, file, st); } catch { }
   const plan = planRequest({
     file,
     presenting: kind === 'ppt' && pptController.getState().presenting,
@@ -140,8 +143,8 @@ function requestThumb(kind, file, onReady) {
     cachedHit,
   });
   if (plan.action === 'skip') return;
-  if (plan.action === 'defer') { deferred.set(`${kind}|${file}`, { kind, file, onReady }); return; }
-  enqueue({ kind, file, onReady });
+  if (plan.action === 'defer') { deferred.set(`${kind}|${file}`, { kind, file, onReady, st }); return; }
+  enqueue({ kind, file, onReady, st });
 }
 
 function enqueue(item) {
@@ -159,7 +162,7 @@ function releaseDeferred() {
   const items = [...deferred.values()];
   deferred.clear();
   for (const it of items) {
-    try { if (!cached(it.kind, it.file)) enqueue(it); } catch { }
+    try { if (!cached(it.kind, it.file, it.st)) enqueue(it); } catch { }
   }
 }
 
@@ -168,13 +171,13 @@ async function drain() {
   draining = true;
   try {
     while (queue.length) {
-      const { kind, file, onReady } = queue.shift();
+      const { kind, file, onReady, st } = queue.shift();
       const key = `${kind}|${file}`;
       pending.delete(key);
       // 排队期间可能已经生成好了（同一批里重复请求）
-      let done = false;
-      try { done = !!cached(kind, file); } catch { }
-      let thumb = done ? cached(kind, file) : '';
+      // 只查一次缓存：原来 done 与 thumb 各调一次 cached()，每次都会 stat 源文件（网络盘上很贵）
+      let thumb = '';
+      try { thumb = cached(kind, file, st); } catch { }
       if (!thumb) {
         try {
           thumb = kind === 'video' ? await videoThumb(file) : await pptThumb(file);
@@ -190,7 +193,7 @@ async function drain() {
       const n = (attempts.get(key) || 0) + 1;
       if (n < MAX_ATTEMPTS) {
         attempts.set(key, n);
-        const t = setTimeout(() => { pending.delete(key); enqueue({ kind, file, onReady }); }, RETRY_DELAY_MS);
+        const t = setTimeout(() => { pending.delete(key); enqueue({ kind, file, onReady, st }); }, RETRY_DELAY_MS);
         if (t.unref) t.unref();
         continue;
       }
@@ -206,8 +209,10 @@ async function drain() {
 }
 
 // 批量入队（列表来自 scanVideos/scanPpts）
+// 透传整个条目（含 size/mtime）给 requestThumb → cached()，避免再对源文件 statSync：
+// 源文件在网络盘/U 盘上时，每一次 stat 都是 5~30ms 的同步往返。
 function requestMany(kind, list, onReady) {
-  (list || []).forEach((v) => requestThumb(kind, v.file, onReady));
+  (list || []).forEach((v) => requestThumb(kind, v.file, onReady, { size: v.size, mtimeMs: v.mtime }));
 }
 
 // 在跑的 ffmpeg 抽帧进程登记表：应用退出时统一 kill，避免主进程死后 ffmpeg 变孤儿继续空转

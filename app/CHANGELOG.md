@@ -52,6 +52,28 @@
 | **CI 语法检查漏掉 `scripts/` 与 `tests/`**（CDP 脚本写错语法要等实机跑才发现） | `.github/workflows/test.yml` | `src`/`scripts`/`tests` 三个目录的 `.js`/`.mjs` 一并纳入 `node --check` |
 
 > 播放条整行化是本轮唯一改动面板结构的改动（DOM 位置移动 + 间距交给 `.content` 的 flex gap 统一提供）；其余均为行为修复，未改动任何对外接口。
+
+#### 第二轮：卡顿与残余缺陷专项
+
+以「实测（CDP 采帧率/长任务/IPC 延迟/逐进程 CPU）+ 独立代码审查」两条线并行排查，结论如下。
+
+| 严重度 | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| 中 | **缩略图链路对源文件重复同步 stat**（网络盘/U 盘上每文件 5~30ms 同步往返） | `thumbs.cached(kind, file, st)` 本身支持传 `st`，但 `requestMany` 把 `size/mtime` 丢了，`drain()` 里还把 `cached()` 调了两次 | `requestMany`/`requestThumb` 全程透传 `st`；`drain()` 去掉重复调用 —— **每文件 stat 从 3 次降到 0 次** |
+| 中 | **拖音量滑条时每帧一次 IPC + 一次托盘 `Shell_NotifyIcon`** | `music:setState` 每次都无条件 `tray.setToolTip(...)`，而 tooltip 文案只在「播放/暂停/换曲」时变，拖音量期间 100% 是无效重复 | 主进程缓存 tooltip 文本，相同则跳过 `setToolTip` |
+| 中 | **macOS 弹英文错误码** | `ppt-control.applescript` 没有 `exportall`/`preopen` 分支，请求落到 osascript 兜底返回 `bad-action`，渲染层把英文错误码原样弹给老师 | 主进程在 macOS 显式返回 `unsupported`/`noop`，渲染层静默跳过，不弹错也不重试 |
+| 低 | **点一张图片投放要先全量重扫视频库**（网络盘上 ≈ 1 秒，期间无提示） | 每次投放图片都 `readdir` + 逐文件 `stat` | 主进程缓存最近一次扫描结果；当前图不在缓存（刚加的）才重扫 |
+| 低 | **拖动排序每帧两次复合选择器扫描 + 全表 classList.toggle** | `moveTrackDrag` 写 `style.top` → 读 `getBoundingClientRect()`（强制全量 layout）→ 写 `classList`；同一复合选择器每帧查两遍 | 行列表只查一次并复用；`classList` 只切「上一个高亮 → 当前目标」两个元素。**行为等价**（本机实测拖拽本就 0 长任务、掉帧 1%，这是降低每帧开销，不是修卡顿） |
+| — | **`preopen` 预热偶发失败（时序竞态）** | PowerPoint 正在退出时新 COM 实例尚未就绪，`$app.Presentations` 为 null → `.Open()` 抛空引用异常；渲染层 `.catch(()=>{})` 只吞 reject，`{ok:false}` 是正常 resolve → **错误完全静默**，后果是预热失效、放映从 1 秒变 4.4 秒 | 脚本层加空值保护（取不到集合就换新实例，仍取不到明确报 `no-office-com`）；主进程层失败后 1.5 秒自动重试一次 |
+
+**评估后明确不改的 3 项**（附理由，避免后人重蹈）：
+
+- **自签证书 RSA-2048 同步生成**（实测 40–226ms，老机 0.5–1.5s）：证书按 IP 缓存，**只有首次运行或换网络才生成**，不是「每次启动」；移到 `worker_threads` 在打包态有风险（Electron 的 worker 里 `require` 不支持 asar），换 Node 原生 `generateKeyPairSync` 又要改 forge 签发逻辑——风险大于收益。
+- **进度条改 `transform: scaleX()`**：审查推算的「60 次 layout/s」不准确（写入只有 250ms 一次，即 4 次/s），实测播放中 0 掉帧；而 `scaleX` 会把渐变条整体压扁，视觉有差异。
+- **拖拽排序的毫秒级体感**：本机实测拖拽 1.5s 为 0 长任务、掉帧 1%，「主线程接近饱和」是静态推算、**未在目标机型证实**。
+
+**实测性能画像**（i7-11700K，4K@150% 主屏 + 2K@100% 副屏）：空闲 20s **0 个长任务**、主进程 CPU **0.2%**；导出 70 页缩略图（真实导出 21s）**0 长任务 0 掉帧**；音乐+计时器运行 12s、视频播放 12s 均 **0 掉帧**；翻页（干净环境）中位 **60ms**；放映响应：PowerPoint 冷启 4405ms → 已开 1471ms → **文件已预热 988ms**。
+
 ### 🧪 测试
 
 - ✅ 单元测试 **67/67**（62 项原有 + 5 项新增回归）

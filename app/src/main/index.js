@@ -74,6 +74,7 @@ const isSmoke = process.argv.includes('--smoke-test');
 
 let win = null;
 let tray = null;
+let lastTrayTip = '';   // 托盘 tooltip 缓存：文案没变就不重复 setToolTip（那是到 Explorer 的同步调用）
 let alwaysOnTop = false;
 let quitting = false;
 let lastPptFile = '';
@@ -263,6 +264,7 @@ function createTray() {
   if (!icon || icon.isEmpty()) icon = nativeImage.createEmpty();
   tray = new Tray(icon);
   tray.setToolTip(`${(brandm && brandm.name) || '课堂中控'} · 课堂中控`);
+  lastTrayTip = `${(brandm && brandm.name) || '课堂中控'} · 课堂中控`;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示主面板', click: () => showMain() },
     { type: 'separator' },
@@ -573,7 +575,7 @@ function remoteCmd({ target, cmd, page }) {
     // 本次还没播过就退到视频库第一个，免得遥控起播静默失效
     if (cmd === 'toggle' && !videoWindow.current().playing) {
       // 库扫描已异步化：这里必须 await，否则拿到的是 Promise，「续播上次」会静默失效
-      library.scanVideos().then((vids) => {
+      scanVideosCached().then((vids) => {
         const file = lastVideoFile || (vids[0] || {}).file || '';
         if (file) playVideoFile(file).catch(() => { });
       }).catch(() => { });
@@ -609,8 +611,31 @@ function onHotkeyAction(action) {
   broadcast('hotkey', action);
 }
 
-// ---------- IPC ----------
+// 扫视频库并把结果存进缓存（投放图片时要「可翻图清单」，见 listImagesFor）
+async function scanVideosCached() {
+  const v = await library.scanVideos();
+  videoScanCache = v;
+  return v;
+}
 
+// 投放图片时要给播放窗一份「可翻图清单」。
+// 原来每次点图片都全量重扫视频目录（readdir + 对每个文件 stat）——
+// 本地 SSD 无所谓，但网络盘/U 盘上 200 个文件 stat 一次 ≈ 1 秒，
+// 表现是「点了图片要等画面才出来」且没有任何提示。
+// 优先用最近一次扫描结果；当前这张图不在里面（用户刚加的）才重扫一次。
+let videoScanCache = null;
+async function listImagesFor(file) {
+  const cached = videoScanCache;
+  if (cached) {
+    const imgs = cached.filter((v) => v.kind === 'img').map((v) => v.file);
+    if (imgs.includes(file)) return imgs;
+  }
+  const fresh = await library.scanVideos();
+  videoScanCache = fresh;
+  return fresh.filter((v) => v.kind === 'img').map((v) => v.file);
+}
+
+// ---------- IPC ----------
 // ---------- 库缩略图：列表同步下发（缓存命中项带 thumb 路径），缺的异步生成后逐个广播补图 ----------
 // 课件：PPT 走 COM 首页缩略图；图片用自身；PDF/Word/Excel 等文档不生成（占位图标）
 function decorateThumbs(list, kind) {
@@ -697,7 +722,7 @@ async function playVideoFile(file) {
   }
   const r = videoWindow.play(file, {
     windowed: !!config.get().videoWindowed,
-    images: library.isImgExt(ext) ? (await library.scanVideos()).filter((v) => v.kind === 'img').map((v) => v.file) : null,
+    images: library.isImgExt(ext) ? await listImagesFor(file) : null,
     auto: !!config.get().imageAutoPlay,
     seconds: config.get().imageAutoSeconds,
   });
@@ -726,7 +751,7 @@ function registerIpc() {
 
   ipcMain.handle('app:getInit', async () => {
     const office = await officeDetector.detect();
-    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    const videos = decorateThumbs(await scanVideosCached(), 'video');
     const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
     requestThumbs(videos, 'video');
     requestThumbs(ppts, 'ppt');
@@ -788,7 +813,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('library:scan', async () => {
-    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    const videos = decorateThumbs(await scanVideosCached(), 'video');
     const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
     requestThumbs(videos, 'video');
     requestThumbs(ppts, 'ppt');
@@ -821,7 +846,7 @@ function registerIpc() {
       if (rel && rel.ok === false && rel.error === 'presenting') return { ok: false, error: 'ppt-presenting' };
     }
     const freshLists = async () => {
-      const videos = decorateThumbs(await library.scanVideos(), 'video');
+      const videos = decorateThumbs(await scanVideosCached(), 'video');
       const ppts = decorateThumbs(await library.scanPpts(), 'ppt');
       requestThumbs(videos, 'video');
       requestThumbs(ppts, 'ppt');
@@ -1029,17 +1054,33 @@ function registerIpc() {
   });
   ipcMain.handle('ppt:exit', () => exitPresent());
   // 放映预热：选中课件后后台「只读无窗口」打开（ctl 通道串行，放映点击时只剩 Run）
-  ipcMain.handle('ppt:preopen', (_e, file) => {
+  ipcMain.handle('ppt:preopen', async (_e, file) => {
     if (!file || pptController.getState().presenting) return { ok: false, error: 'busy' };
     // 非 PPT 文档（PDF/Word/图片…）不走 COM 预热，避免白拉起 PowerPoint 打不开还报错
     if (!library.isPptExt(path.extname(file))) return { ok: true, noop: 'non-ppt' };
-    return pptController.runCtl('preopen', { path: file }, 20000, 'ctl');
+    // macOS 的 AppleScript 没有 preopen 分支：每次选中课件都白 spawn 一次 osascript，
+    // 而且拿不到任何预热收益（放映必然比 Windows 慢）。显式跳过，别做无用功。
+    if (IS_MAC) return { ok: true, noop: 'mac-unsupported' };
+    const r = await pptController.runCtl('preopen', { path: file }, 20000, 'ctl');
+    if (r && r.ok) return r;
+    // 预热失败多半是「PowerPoint 正在退出、新 COM 实例还没就绪」的时序竞态
+    // （脚本侧表现为 com-error / 空引用异常）。预热只是优化，失败不该让老师多等 3 秒开课：
+    // 1.5 秒后自动再试一次，通常就能成。渲染层是后台调用，不阻塞任何 UI。
+    await new Promise((res) => setTimeout(res, 1500));
+    if (pptController.getState().presenting) return { ok: false, error: 'busy' };
+    const r2 = await pptController.runCtl('preopen', { path: file }, 20000, 'ctl');
+    return (r2 && r2.ok) ? r2 : (r || r2 || { ok: false, error: 'preopen-failed' });
   });
   // 全部页面缩略图：一次性导出所有页到按版本缓存的目录，目录轮询渐进广播（页面导出一张显示一张）
   let exportAllBusy = false;
   ipcMain.handle('ppt:exportAll', async (_e, file) => {
     if (!file) return { ok: false, error: 'no-file' };
-    if (!library.isPptExt(path.extname(file))) return { ok: true, total: 0, cached: true }; // 非 PPT 无页面网格
+    if (!library.isPptExt(path.extname(file))) return { ok: true, total: 0, cached: true };
+    // macOS 的 AppleScript 只实现了 start/exit/status/next/prev/pageinfo/presenter，
+    // 没有 exportall 分支 —— 原来会落到 osascript 的兜底分支返回 bad-action，
+    // 渲染层把这个英文错误码原样弹给老师（"页面缩略图导出失败：bad-action"）。
+    // 这里显式声明「该平台不支持」，由渲染层静默跳过整项功能。
+    if (IS_MAC) return { ok: true, total: 0, cached: true, unsupported: true }; // 非 PPT 无页面网格
     // 放映中：绝不启动新的导出（Export 与幻灯片渲染抢主线程，会把放映卡死，PERF-12），
     // 但仍把「已缓存的页」列出来 —— 面板缩略图轨道要跟着正在放的那份课件，
     // 否则老师点缩略图会跳到另一份课件的页码上。
@@ -1205,7 +1246,7 @@ const pushPages = (done) => {
       }
     }
     broadcast('import:progress', null);
-    const videos = decorateThumbs(await library.scanVideos(), 'video');
+    const videos = decorateThumbs(await scanVideosCached(), 'video');
     requestThumbs(videos, 'video'); // 新入库的媒体异步抽首帧，好了广播 thumb:ready
     return { ok: true, imported, transcoded, failed, images, videos };
   });
@@ -1257,7 +1298,10 @@ const pushPages = (done) => {
     musicMemo = s;
     if (tray && !tray.isDestroyed()) {
       const bn = (brandm && brandm.name) || '课堂中控';
-      tray.setToolTip(s && s.playing && s.track ? `${bn} · ♪ ${s.track}` : `${bn} · 课堂中控`);
+      const tip = s && s.playing && s.track ? `${bn} · ♪ ${s.track}` : `${bn} · 课堂中控`;
+      // tooltip 只在「播放/暂停/换曲」时变；拖音量滑条时每秒 60 次 IPC 全是同样的文案，
+      // 而 setToolTip 是一次到 Explorer 的同步 shell 调用，重复调用白拖慢主进程。
+      if (tip !== lastTrayTip) { lastTrayTip = tip; tray.setToolTip(tip); }
     }
     // 音量/循环模式记忆（对标 Spotify：重启后保持上次的设置）
     clearTimeout(musicPersistTimer);
