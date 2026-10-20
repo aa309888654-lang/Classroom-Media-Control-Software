@@ -1,23 +1,10 @@
 # 修改记录（Change Log）
 
-## [2026.10.19] - 2026-10-18
+## [2026.10.20] - 2026-10-20
 
 ### 🐛 Bug 修复
 
-**混合 DPI 下投屏落错屏（多屏 + 各屏缩放比不同）**
-- **问题描述**：多屏且各屏缩放比不同（如 4K@150% 主屏 + 2K@100% 副屏）时，PPT 放映窗口落到错误的屏幕或位置偏移。根因有两层：
-  1. 全屏放映时 `SlideShowWindow.Left/Top/Width/Height` 报的是**幻灯片尺寸**（恒为 16:9 固定值）而非窗口尺寸，设值完全无效
-  2. 按「宽高比最接近反推源屏」选目标屏，在混合 DPI 下 4K@150% 与 2K@100% 在 DIP 空间里都是 2560×1440，必然认错
-- **修复方案**：放弃 COM 坐标搬运，改用 Win32 `SetWindowPos` 直接搬放映窗口 HWND
-  - `EnumWindows` 按 class `screenClass` 找放映窗（`FindWindowEx` 顺链在该机匹配不到），面积取最大、`-gt` 保留 Z 序上层窗
-  - `MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)` + `GetMonitorInfo` 直接问系统「窗口落在哪块屏」
-  - 搬完回读校验：退出全屏 → `SetWindowPos` 到目标屏物理矩形 → 回读 → 重新置全屏
-  - 进程启动即声明 `PER_MONITOR_AWARE_V2`，否则 `GetWindowRect` 返回被系统虚拟化过的坐标
-- **修改文件**：`src/main/displays.js`、`src/main/index.js`、`resources/ppt-control.ps1`
-- **Commit**：`227617a`
-- **实机验证**：双屏环境两方向复测 —— 副屏 `finalX=3840 finalW=2560 finalH=1440`、主屏 `finalX=0 finalW=3840 finalH=2160`；另用独立校验器（系统 API 直接读放映窗物理矩形与所在显示器矩形）确认 `RECT_EXACT_MATCH=True` / `MONITOR_MATCH=True`
-
-#### 2026-10-20 全面检查发现并修复的缺陷
+#### 全面检查发现并修复的缺陷
 
 本轮做了一次全量代码审查（独立审查 + 逐条回源码复核），修掉 3 项严重 + 7 项一般缺陷。全部为**行为修复**，未改动任何对外接口。
 
@@ -54,11 +41,45 @@
 
 **未改**：品牌解密的 PBKDF2 轮数。迭代数与 `brand.data.js` 密文绑定，改轮数必须重新加密品牌资产，风险大于收益；改异步也无实际收益（该阶段没有并发工作，await 后总启动时间不变）。本机实测 210000 轮耗时 **96.6ms**。
 
+#### 修复错误轮：布局与工程修正
+
+| 缺陷 | 位置 | 修复 |
+|---|---|---|
+| **「正在播放」条在默认窗口宽下必然折行**（条高 147px，且位于首屏之外） | `src/renderer/index.html`、`src/renderer/assets/styles.css` | 它本就是**全局控制条**（当前曲目 + 视频进度 + 音量 + 循环 + **PPT 放映翻页组**），却被塞在 `.media-row` 的窄列里必然折行。移出后独占整行 → 条高 **78px**，820–1600px 宽全程不折行，并回到首屏内 |
+| **manifest 里 4 条铃声来源已失效**（指向 Mixkit 铃声，实际早已换成 Freesound 校园实录并改名） | `resources/music/manifest.json` | 删除那 4 条 → 91 条，与 `licenses.md` 的「Mixkit 音乐（91 首）」精确吻合（diff 仅 24 行删除，格式零改动） |
+| **重跑 `fetch-music` 会用 Mixkit 铃声覆盖 Freesound 校园实录素材** | `scripts/fetch-music.mjs` | `BELLS` 下载段整体停用并写明原因（留着会同时覆盖素材、把 manifest 写回错误来源） |
+| **「开学组」50.7MB 复本既没跟踪也没忽略**（`git add -A` 会误提交） | `.gitignore` | 显式排除 `app/resources/music/开学组/` |
+| **CI 语法检查漏掉 `scripts/` 与 `tests/`**（CDP 脚本写错语法要等实机跑才发现） | `.github/workflows/test.yml` | `src`/`scripts`/`tests` 三个目录的 `.js`/`.mjs` 一并纳入 `node --check` |
+
+> 播放条整行化是本轮唯一改动面板结构的改动（DOM 位置移动 + 间距交给 `.content` 的 flex gap 统一提供）；其余均为行为修复，未改动任何对外接口。
 ### 🧪 测试
 
 - ✅ 单元测试 **67/67**（62 项原有 + 5 项新增回归）
 - ✅ CDP 全面功能测试 61/61、新增功能专项 35/35、PPT 缩略图链路 6/6
 - ✅ 产物完整性核验：46 个源文件与 `app.asar` 逐字节一致，版本一致
+
+---
+
+## [2026.10.19] - 2026-10-18
+
+### 🐛 Bug 修复
+
+**混合 DPI 下投屏落错屏（多屏 + 各屏缩放比不同）**
+- **问题描述**：多屏且各屏缩放比不同（如 4K@150% 主屏 + 2K@100% 副屏）时，PPT 放映窗口落到错误的屏幕或位置偏移。根因有两层：
+  1. 全屏放映时 `SlideShowWindow.Left/Top/Width/Height` 报的是**幻灯片尺寸**（恒为 16:9 固定值）而非窗口尺寸，设值完全无效
+  2. 按「宽高比最接近反推源屏」选目标屏，在混合 DPI 下 4K@150% 与 2K@100% 在 DIP 空间里都是 2560×1440，必然认错
+- **修复方案**：放弃 COM 坐标搬运，改用 Win32 `SetWindowPos` 直接搬放映窗口 HWND
+  - `EnumWindows` 按 class `screenClass` 找放映窗（`FindWindowEx` 顺链在该机匹配不到），面积取最大、`-gt` 保留 Z 序上层窗
+  - `MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)` + `GetMonitorInfo` 直接问系统「窗口落在哪块屏」
+  - 搬完回读校验：退出全屏 → `SetWindowPos` 到目标屏物理矩形 → 回读 → 重新置全屏
+  - 进程启动即声明 `PER_MONITOR_AWARE_V2`，否则 `GetWindowRect` 返回被系统虚拟化过的坐标
+- **修改文件**：`src/main/displays.js`、`src/main/index.js`、`resources/ppt-control.ps1`
+- **Commit**：`227617a`
+- **实机验证**：双屏环境两方向复测 —— 副屏 `finalX=3840 finalW=2560 finalH=1440`、主屏 `finalX=0 finalW=3840 finalH=2160`；另用独立校验器（系统 API 直接读放映窗物理矩形与所在显示器矩形）确认 `RECT_EXACT_MATCH=True` / `MONITOR_MATCH=True`
+
+### 🧪 测试
+
+- ✅ 双屏环境实机复测两方向：副屏 `finalX=3840 finalW=2560 finalH=1440`、主屏 `finalX=0 finalW=3840 finalH=2160`；另用独立校验器（系统 API 直接读放映窗物理矩形与所在显示器矩形）确认 `RECT_EXACT_MATCH=True` / `MONITOR_MATCH=True`
 
 ---
 
