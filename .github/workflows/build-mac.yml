@@ -5,6 +5,15 @@ name: build-mac
 on:
   workflow_dispatch:
 
+# macOS runner 按分钟计费：重复触发时直接取消旧的，不排队叠加
+concurrency:
+  group: build-mac
+  cancel-in-progress: true
+
+# 最小权限：只读仓库内容即可（上传产物走 Actions 运行时的 token，不需 GITHUB_TOKEN 写权限）
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-14
