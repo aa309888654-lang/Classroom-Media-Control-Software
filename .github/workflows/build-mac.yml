@@ -10,9 +10,11 @@ concurrency:
   group: build-mac
   cancel-in-progress: true
 
-# 最小权限：只读仓库内容即可（上传产物走 Actions 运行时的 token，不需 GITHUB_TOKEN 写权限）
+# 需要 contents: write：最后一步把 macOS 包直接传进 Release。
+# 为什么不从本机下载 Actions 产物再上传？产物落在 Azure Blob（美国西部），
+# 国内单连接只有 ~35KB/s，1GB 要下 8 小时；跑道直传不受这个限制。
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -40,3 +42,38 @@ jobs:
           name: xiaotian-aigc-mac
           path: 软件封装/*.zip
           retention-days: 14
+
+      # 跑道直传 Release：省掉「本机从 Azure Blob 下 1GB」这一步
+      # GitHub 会剥掉资产名里的非 ASCII 字符，小天AIGC-… 会被截成 AIGC-…，
+      # 所以资产名统一用拼音 ASCII（xiaotian-aigc-*），中文原名放进 label。
+      - name: 传进 Release
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          VER=$(node -p "require('./app/package.json').version")
+          TAG="v${VER}"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "小天AIGC ${TAG}" --generate-notes --target "$GITHUB_SHA"
+          fi
+          for f in 软件封装/*.zip; do
+            orig=$(basename "$f")
+            base="${orig%.zip}"
+            tail_name=$(echo "$base" | sed -E 's/^小天AIGC-([0-9.]+-)?//')
+            ascii="xiaotian-aigc-${tail_name}.zip"
+            dir=$(dirname "$f")
+            cp "$f" "$dir/$ascii"
+            gh release upload "$TAG" "$dir/$ascii" --clobber --repo "$GITHUB_REPOSITORY"
+            rm -f "$dir/$ascii"
+            aid=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq ".assets[] | select(.name == \"$ascii\") | .id" | head -1)
+            if [ -n "$aid" ]; then
+              printf '{"label": "%s"}' "$orig" | \
+                gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$aid" --input -
+            fi
+          done
+          echo "--- Release 资产 ---"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name)  [\(.label)]"'

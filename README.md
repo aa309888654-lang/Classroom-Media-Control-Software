@@ -15,7 +15,8 @@
 | Windows | `xiaotian-aigc-setup-2026.10.20.exe` | 安装版，带桌面快捷方式（教室固定用机推荐，启动最快） |
 | Windows | `xiaotian-aigc-2026.10.20-win.zip` | 绿色解压版，解压一次后双击 `小天AIGC.exe` 秒开（低性能电脑/U盘推荐） |
 | Windows | `xiaotian-aigc-portable-2026.10.20.exe` | 便携版，双击即用——但每次启动要自解压约 500MB，低性能电脑启动慢，仅建议临时演示用 |
-| macOS | `xiaotian-aigc-mac.zip` | 需在 macOS 解压后右键 App →「打开」首次放行 |
+| macOS (Apple Silicon) | `xiaotian-aigc-arm64-mac.zip` | 需在 macOS 解压后右键 App →「打开」首次放行 |
+| macOS (Intel) | `xiaotian-aigc-mac.zip` | 同上 |
 
 > **为什么下载的文件名是 `xiaotian-aigc-*`？** GitHub 会把 Release 资产名里的非 ASCII 字符剥掉，`小天AIGC-…` 会被截成 `AIGC-…`，所以这里统一用拼音 ASCII 名（与 `app/package.json` 的 `name` 一致）。Release 页面在每个文件名旁同时标注了中文原名。**本地构建产物**（`软件封装/` 目录）仍叫 `小天AIGC-Setup-2026.10.20.exe` 等，与线上是同一份文件。
 
