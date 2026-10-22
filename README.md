@@ -10,12 +10,14 @@
 
 **最新版 v2026.10.20** ｜ 全部历史版本：<https://github.com/aa309888654-lang/Classroom-Media-Control-Software/releases>
 
-| 平台 | 文件 | 说明 |
+| 平台 | 下载文件 | 说明 |
 |---|---|---|
-| Windows | `小天AIGC-Setup-2026.10.20.exe` | 安装版，带桌面快捷方式（教室固定用机推荐，启动最快） |
-| Windows | `小天AIGC-2026.10.20-win.zip` | 绿色解压版，解压一次后双击 `小天AIGC.exe` 秒开（低性能电脑/U盘推荐） |
-| Windows | `小天AIGC-Portable-2026.10.20.exe` | 便携版，双击即用——但每次启动要自解压约 500MB，低性能电脑启动慢，仅建议临时演示用 |
+| Windows | `xiaotian-aigc-setup-2026.10.20.exe` | 安装版，带桌面快捷方式（教室固定用机推荐，启动最快） |
+| Windows | `xiaotian-aigc-2026.10.20-win.zip` | 绿色解压版，解压一次后双击 `小天AIGC.exe` 秒开（低性能电脑/U盘推荐） |
+| Windows | `xiaotian-aigc-portable-2026.10.20.exe` | 便携版，双击即用——但每次启动要自解压约 500MB，低性能电脑启动慢，仅建议临时演示用 |
 | macOS | `xiaotian-aigc-mac.zip` | 需在 macOS 解压后右键 App →「打开」首次放行 |
+
+> **为什么下载的文件名是 `xiaotian-aigc-*`？** GitHub 会把 Release 资产名里的非 ASCII 字符剥掉，`小天AIGC-…` 会被截成 `AIGC-…`，所以这里统一用拼音 ASCII 名（与 `app/package.json` 的 `name` 一致）。Release 页面在每个文件名旁同时标注了中文原名。**本地构建产物**（`软件封装/` 目录）仍叫 `小天AIGC-Setup-2026.10.20.exe` 等，与线上是同一份文件。
 
 > **低性能电脑启动慢？** 便携版每次启动都会把约 500MB 自解压到临时目录（老旧电脑约需 1 分钟）。教室固定用机请改用**安装版**，U盘随身携带请用**绿色解压版**（解压一次，之后 1-2 秒启动）。
 
