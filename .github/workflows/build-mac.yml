@@ -58,6 +58,10 @@ jobs:
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "小天AIGC ${TAG}" --generate-notes --target "$GITHUB_SHA"
           fi
+          # 注意：gh release view --json assets 里的 .id 是 GraphQL node id（RA_…），
+          # 不是 REST 用的数字 id，直接拼 URL 会 404。数字 id 要走 REST 接口取。
+          RID=$(gh api "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id")
           for f in 软件封装/*.zip; do
             orig=$(basename "$f")
             base="${orig%.zip}"
@@ -67,13 +71,14 @@ jobs:
             cp "$f" "$dir/$ascii"
             gh release upload "$TAG" "$dir/$ascii" --clobber --repo "$GITHUB_REPOSITORY"
             rm -f "$dir/$ascii"
-            aid=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-              --jq ".assets[] | select(.name == \"$ascii\") | .id" | head -1)
+            aid=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets" \
+              --jq ".[] | select(.name == \"$ascii\") | .id" | head -1)
             if [ -n "$aid" ]; then
               printf '{"label": "%s"}' "$orig" | \
-                gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$aid" --input -
+                gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$aid" --input - \
+                --jq '.name' || echo "  警告：label 设置失败（不影响上传）"
             fi
           done
           echo "--- Release 资产 ---"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[] | "\(.name)  [\(.label)]"'
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets" \
+            --jq '.[] | "\(.name)  [\(.label)]  \(.state)"'
