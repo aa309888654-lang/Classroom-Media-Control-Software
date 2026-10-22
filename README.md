@@ -8,6 +8,8 @@
 
 ## 下载
 
+**最新版 v2026.10.20** ｜ 全部历史版本：<https://github.com/aa309888654-lang/Classroom-Media-Control-Software/releases>
+
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | Windows | `小天AIGC-Setup-2026.10.20.exe` | 安装版，带桌面快捷方式（教室固定用机推荐，启动最快） |
